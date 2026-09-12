@@ -113,11 +113,12 @@ def resample_s16(pcm: bytes, src: int, dst: int) -> bytes:
 # ---- the three calls ----------------------------------------------------------
 def transcribe(pcm16: bytes, key: str, rate: int = RADIO_RATE) -> str:
     body = {"contents": [{"parts": [
-        {"text": "Transcribe the speech in this narrowband FM walkie-talkie audio. Return only the spoken "
-                 "words. If there is no intelligible speech, return an empty string."},
+        {"text": "Transcribe the speech in this narrowband FM walkie-talkie audio. Output ONLY the spoken "
+                 "words, nothing else. If there is no intelligible speech, output exactly: [no speech]"},
         {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(pcm16_to_wav(pcm16, rate)).decode()}},
     ]}]}
-    return _text(_gen(os.getenv("GEMINI_STT_MODEL", GEMINI_TEXT_MODEL), body, key)).strip().strip('"')
+    out = _text(_gen(os.getenv("GEMINI_STT_MODEL", GEMINI_TEXT_MODEL), body, key)).strip().strip('"')
+    return "" if "[no speech]" in out.lower() or out.lower().startswith("an empty string") else out
 
 def reply(transcript: str, key: str, history: list[dict] | None = None, system: str = RADIO_SYSTEM_PROMPT) -> str:
     contents = list(history or []) + [{"role": "user", "parts": [{"text": transcript or "(nothing intelligible)"}]}]

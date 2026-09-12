@@ -218,18 +218,34 @@ static void unkey(const char *why)
     sendStatus();
 }
 
-static void key()
+static void key(bool espAudio)
 {
     if (g_tx) return;
     if (!g_armed) { logf("PTT refused: not armed"); return; }
     if (!g_radioOk) { logf("PTT refused: radio down"); return; }
     if (twr.getBattVoltage() < 3400) { logf("PTT refused: batt %umV", twr.getBattVoltage()); return; }
-    twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_ESP);  // GPIO17 high: ESP -> radio mic
-    setSink(1);
+    if (espAudio) {
+        twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_ESP);  // GPIO17 high: ESP -> radio mic
+        setSink(1);
+    } else {
+        twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_RADIO); // onboard mic -> radio
+    }
     radio.transmit();                                         // PTT low
     g_tx = true; g_txStart = millis();
-    logf("PTT on  tx=%lu Hz low-power", radio.getStetting().transFreq);
+    logf("PTT on (%s) tx=%lu Hz low-power", espAudio ? "esp audio" : "onboard mic", radio.getStetting().transFreq);
     sendStatus();
+}
+
+// Physical PTT button (GPIO3, active low): human talks into the onboard mic. Still needs arm.
+static void pollPttButton()
+{
+    static bool wasDown = false;
+    static uint32_t lastChange = 0;
+    bool down = digitalRead(BUTTON_PTT_PIN) == LOW;
+    if (down != wasDown && millis() - lastChange > 30) {
+        wasDown = down; lastChange = millis();
+        if (down) key(false); else if (g_tx) unkey("button");
+    }
 }
 #endif
 
@@ -279,7 +295,7 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint16_t len)
         break;
     }
     case T_PTT:
-        if (len >= 1 && p[0]) key(); else unkey("host");
+        if (len >= 1 && p[0]) key(true); else unkey("host");
         break;
 #else
     case T_TX_ARM: case T_PTT:
@@ -363,6 +379,9 @@ void setup()
     uint8_t addr = twr.getOLEDAddress();
     if (addr != 0xFF) { u8g2.setI2CAddress(addr << 1); g_oledOk = u8g2.begin(); }
 
+#if TX_BUILD
+    pinMode(BUTTON_PTT_PIN, INPUT_PULLUP);
+#endif
     radio.setPins(SA868_PTT_PIN, SA868_PD_PIN);
     g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());   // leaves PTT high (idle)
     if (!g_radioOk) {
@@ -418,6 +437,7 @@ void loop()
     if (sql != lastSql) { lastSql = sql; sendStatus(); }
 
 #if TX_BUILD
+    pollPttButton();
     if (g_tx && (now - g_txStart > TX_MAX_KEY_MS)) unkey("max key time");
     if (g_tx && !Serial) unkey("host gone");
     if (g_armed && (int32_t)(now - g_armExpiry) > 0) { unkey("arm expired"); g_armed = false; logf("TX arm expired"); sendStatus(); }
