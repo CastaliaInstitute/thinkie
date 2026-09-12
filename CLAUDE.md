@@ -24,7 +24,7 @@ Read `docs/hardware.md` first — pin map, ports, firmware state, caveats.
 - `tools/` — host-side probing scripts (ports.py, bootlog.py); read-only
 - `firmware/` — PlatformIO project for the custom T-TWR firmware (+ factory backups)
 - `host/` — Mac-side agent (audio ↔ STT ↔ Claude ↔ TTS)
-- `.claude/agents/twr.md` — the board-aware subagent
+- `.claude/agents/thinkie.md` — the board-aware subagent
 
 ## Tooling
 - `esptool.py` v4.9 (homebrew), `pio`/`platformio`, `arduino-cli`, `uv` all on PATH.

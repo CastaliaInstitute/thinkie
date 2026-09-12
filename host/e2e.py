@@ -10,7 +10,7 @@
 """
 import argparse, os, sys, threading, time, wave
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from twr_link import TwrLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ
+from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ
 from say_over_air import transmit, tx_allowed
 from agent import listen_for_utterance, save_wav
 import ai_gemini
@@ -42,13 +42,13 @@ def main():
     ident = lambda s: f"{a.callsign}. {s} {a.callsign}, over." if a.callsign else f"{s} Over."
 
     ai, hu = a.ai.upper(), ("B" if a.ai.upper() == "A" else "A")
-    A = TwrLink(ai, log=lambda s: print(f"  [{ai}]", s) if ("PTT" in s or "link" in s) else None)   # AI station
-    B = TwrLink(hu, log=lambda s: print(f"  [{hu}]", s) if ("PTT" in s or "link" in s) else None)   # human side
+    A = ThinkieLink(ai, log=lambda s: print(f"  [{ai}]", s) if ("PTT" in s or "link" in s) else None)   # AI station
+    B = ThinkieLink(hu, log=lambda s: print(f"  [{hu}]", s) if ("PTT" in s or "link" in s) else None)   # human side
     time.sleep(0.5)
     for l in (A, B):
         l.set_freq(hz, sq=3)
         st = l.wait_status()
-        if not st.tx_build: sys.exit(f"{st.board} is not a twr-tx build")
+        if not st.tx_build: sys.exit(f"{st.board} is not a thinkie-tx build")
     print(f"A: {A.status}\nB: {B.status}\n")
 
     # 1. B asks

@@ -9,12 +9,12 @@ synthesises it, and plays it back — through the board speaker (default, no RF)
   host/agent.py A                          # listen on A, answer on A's speaker
   host/agent.py A --freq 146.520           # tune first (MHz)
   host/agent.py A --answer-on B            # answer through B's speaker instead
-  host/agent.py A --tx --answer-on A       # answer OVER THE AIR from A (twr-tx firmware; prompts to arm)
+  host/agent.py A --tx --answer-on A       # answer OVER THE AIR from A (thinkie-tx firmware; prompts to arm)
   host/agent.py A --once                   # handle one exchange, then exit
 """
 import argparse, os, sys, time, wave
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from twr_link import TwrLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ, FRAME_BYTES
+from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ, FRAME_BYTES
 import ai_gemini
 
 MIN_CLIP_S = 0.6        # ignore squelch blips shorter than this
@@ -26,7 +26,7 @@ def save_wav(path, pcm):
     with wave.open(path, "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(AUDIO_RATE_HZ); w.writeframes(pcm)
 
-def listen_for_utterance(link: TwrLink, quiet=False, max_clip=MAX_CLIP_S) -> bytes:
+def listen_for_utterance(link: ThinkieLink, quiet=False, max_clip=MAX_CLIP_S) -> bytes:
     """Block until a squelch-delimited clip is captured; return s16le PCM."""
     pre = []                # rolling 0.3 s pre-roll so we don't lose the first syllable
     clip = bytearray(); active = False; closed_at = None; t_open = None
@@ -63,7 +63,7 @@ def main():
     ap.add_argument("--answer-on", default=None, help="board that plays the answer (default: same)")
     ap.add_argument("--freq", type=float, help="MHz to tune the listening board (and answer board) to")
     ap.add_argument("--sq", type=int, default=3)
-    ap.add_argument("--tx", action="store_true", help="answer over the air (needs twr-tx firmware + arm)")
+    ap.add_argument("--tx", action="store_true", help="answer over the air (needs thinkie-tx firmware + arm)")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--save", default=None, help="dir to save clips/replies as WAV")
     ap.add_argument("--vol", type=int, default=6)
@@ -72,8 +72,8 @@ def main():
     a = ap.parse_args()
 
     ai_gemini.load_env(); key, src = ai_gemini.resolve_api_key(); print(f"Gemini key from {src}")
-    rx = TwrLink(a.listen, log=lambda s: print(f"[{a.listen}] {s}"))
-    tx = rx if (a.answer_on or a.listen) == a.listen else TwrLink(a.answer_on, log=lambda s: print(f"[{a.answer_on}] {s}"))
+    rx = ThinkieLink(a.listen, log=lambda s: print(f"[{a.listen}] {s}"))
+    tx = rx if (a.answer_on or a.listen) == a.listen else ThinkieLink(a.answer_on, log=lambda s: print(f"[{a.answer_on}] {s}"))
     time.sleep(0.4)
     if a.freq:
         hz = int(round(a.freq * 1e6)); rx.set_freq(hz, sq=a.sq)
@@ -87,7 +87,7 @@ def main():
         from say_over_air import tx_allowed
         s = tx.wait_status()
         if not s or not s.tx_build:
-            sys.exit("answer board is not running a twr-tx build; refusing --tx")
+            sys.exit("answer board is not running a thinkie-tx build; refusing --tx")
         if not tx_allowed(s.tx_hz): sys.exit(f"refusing --tx on {s.tx_hz/1e6:.4f} MHz (not 2 m / MURS)")
         print(f"\n*** --tx: replies will be TRANSMITTED from {tx.status.board} on {s.tx_hz/1e6:.4f} MHz, low power.")
         if input("Type ARM to arm the transmitter for this session: ").strip() != "ARM":

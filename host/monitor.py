@@ -8,7 +8,7 @@
 """
 import argparse, os, subprocess, sys, time, wave, array, math
 sys.path.insert(0, os.path.dirname(__file__))
-from twr_link import TwrLink, Status, T_AUDIO_RX, T_STATUS, T_LOG, AUDIO_RATE_HZ
+from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, T_LOG, AUDIO_RATE_HZ
 
 def resolve(p):
     if p.startswith("/dev/"): return p
@@ -23,7 +23,7 @@ def main():
     ap.add_argument("--vol", type=int); ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
 
-    link = TwrLink(resolve(a.port)); time.sleep(0.3)
+    link = ThinkieLink(resolve(a.port)); time.sleep(0.3)
     if a.freq: link.set_freq(int(round(a.freq * 1e6)), sq=a.sq)
     if a.vol: link.speaker(False, a.vol)
     link.ping()

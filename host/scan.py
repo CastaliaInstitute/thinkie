@@ -3,7 +3,7 @@
 Defaults to the seven NOAA weather channels."""
 import os, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(__file__))
-from twr_link import TwrLink, Status, T_STATUS
+from thinkie_link import ThinkieLink, Status, T_STATUS
 
 NOAA = [162.400, 162.425, 162.450, 162.475, 162.500, 162.525, 162.550]
 
@@ -19,7 +19,7 @@ def main():
         while f <= b + 1e-9: freqs.append(round(f, 4)); f += step
     else:
         freqs = NOAA
-    link = TwrLink(port); time.sleep(0.3)
+    link = ThinkieLink(port); time.sleep(0.3)
     results = []
     for mhz in freqs:
         link.set_freq(int(round(mhz * 1e6)), sq=0)

@@ -54,7 +54,7 @@ class Status:
                 f"{'TX! ' if self.tx else ''}{'armed ' if self.tx_enabled else ''}"
                 f"sink={'mic' if self.sink else 'spk'} q={self.play_queued} drop={self.dropped}")
 
-class TwrLink:
+class ThinkieLink:
     """Background reader; frames land in .q as (type, payload). .status holds the latest Status."""
     def __init__(self, port: str, log=None):
         self.port = resolve_port(port)

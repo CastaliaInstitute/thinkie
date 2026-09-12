@@ -8,7 +8,7 @@
 """
 import argparse, math, struct, subprocess, sys, os, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from twr_link import TwrLink, AUDIO_RATE_HZ
+from thinkie_link import ThinkieLink, AUDIO_RATE_HZ
 import ai_gemini
 
 def load_wav_16k(path: str) -> bytes:
@@ -38,7 +38,7 @@ def main():
     else:
         pcm = tone(a.tone, a.secs)
 
-    link = TwrLink(a.port, log=lambda s: print("[board]", s))
+    link = ThinkieLink(a.port, log=lambda s: print("[board]", s))
     time.sleep(0.3)
     link.speaker(True, a.vol); link.gain(a.gain, 25)
     secs = link.play_pcm(pcm)

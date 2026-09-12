@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""TRANSMIT a spoken message from a board (twr-tx firmware). Arms, keys, plays, unkeys, disarms.
+"""TRANSMIT a spoken message from a board (thinkie-tx firmware). Arms, keys, plays, unkeys, disarms.
 
   host/say_over_air.py B --callsign K0INQ "What is the capital of France?"
   host/say_over_air.py B --callsign K0INQ --wav question.wav
   host/say_over_air.py B --callsign K0INQ --tone 1000 --secs 1      # 1 kHz test tone
 
 Every transmission is prefixed/suffixed with the callsign (Part 97 station ID).
-Refuses if the board is not a twr-tx build, or if --freq is outside 144-148 MHz.
+Refuses if the board is not a thinkie-tx build, or if --freq is outside 144-148 MHz.
 """
 import argparse, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from twr_link import TwrLink, AUDIO_RATE_HZ
+from thinkie_link import ThinkieLink, AUDIO_RATE_HZ
 
 MURS_HZ = {151_820_000, 151_880_000, 151_940_000, 154_570_000, 154_600_000}
 def tx_allowed(hz: int) -> bool:
@@ -19,7 +19,7 @@ def tx_allowed(hz: int) -> bool:
 from play import load_wav_16k, tone
 import ai_gemini
 
-def transmit(link: TwrLink, pcm: bytes, mic_gain: int = 25, lead_s: float = 0.3) -> float:
+def transmit(link: ThinkieLink, pcm: bytes, mic_gain: int = 25, lead_s: float = 0.3) -> float:
     """Key, stream pcm to the radio mic, unkey. Returns keyed seconds."""
     link.flush(); link.gain(100, mic_gain)
     link.ptt(True); t0 = time.time(); time.sleep(lead_s)          # SA868 TX settle
@@ -38,9 +38,9 @@ def main():
     ap.add_argument("--no-id", action="store_true", help="omit spoken callsign (tone tests only)")
     a = ap.parse_args()
 
-    link = TwrLink(a.port, log=lambda s: print(f"[{a.port}] {s}")); time.sleep(0.4)
+    link = ThinkieLink(a.port, log=lambda s: print(f"[{a.port}] {s}")); time.sleep(0.4)
     st = link.wait_status()
-    if not st or not st.tx_build: sys.exit("board is not running a twr-tx build")
+    if not st or not st.tx_build: sys.exit("board is not running a thinkie-tx build")
     if a.freq:
         if not tx_allowed(int(round(a.freq * 1e6))): sys.exit("refusing: not a 2 m amateur or MURS frequency")
         link.set_freq(int(round(a.freq * 1e6)), sq=3); st = link.wait_status()

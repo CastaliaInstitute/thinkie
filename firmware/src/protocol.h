@@ -1,5 +1,5 @@
-// twr link protocol — board <-> host over USB CDC.
-// Mirror of host/twr_link.py. Keep the two in sync.
+// thinkie link protocol — board <-> host over USB CDC.
+// Mirror of host/thinkie_link.py. Keep the two in sync.
 //
 //   frame := 0xAA 0x55 | type:u8 | len:u16le | payload[len] | crc8
 //   crc8  := poly 0x07, init 0, over type,len,payload
@@ -18,8 +18,8 @@ enum : uint8_t {
     // host -> device
     T_SET_FREQ = 0x10,  // u32 rx_hz, u32 tx_hz, u8 sq(0-8), u8 ctcss_rx, u8 ctcss_tx
     T_AUDIO_TX = 0x11,  // int16le PCM @ AUDIO_RATE_HZ -> current sink (speaker, or radio mic while keyed)
-    T_PTT      = 0x12,  // u8 on        (twr-tx builds only, and only while armed)
-    T_TX_ARM   = 0x13,  // u32 magic (TX_ARM_MAGIC arms, 0 disarms)   (twr-tx builds only)
+    T_PTT      = 0x12,  // u8 on        (thinkie-tx builds only, and only while armed)
+    T_TX_ARM   = 0x13,  // u32 magic (TX_ARM_MAGIC arms, 0 disarms)   (thinkie-tx builds only)
     T_SPK      = 0x14,  // u8 route (0=radio->spk, 1=esp->spk), u8 radio volume 1..8
     T_PING     = 0x15,  // -> T_STATUS (+ T_LOG with PMU detail)
     T_GAIN     = 0x16,  // u8 spk_gain_pct, u8 mic_gain_pct (0..200) for AUDIO_TX playback
@@ -38,7 +38,7 @@ struct __attribute__((packed)) twr_status {
     int16_t  rssi;       // from AT+RSSI?
     uint16_t batt_mv;
     uint8_t  tx;         // 1 = PTT asserted
-    uint8_t  tx_enabled; // 1 = armed (twr-tx builds only)
+    uint8_t  tx_enabled; // 1 = armed (thinkie-tx builds only)
     uint32_t rx_hz;
     uint32_t tx_hz;
     uint8_t  sq;

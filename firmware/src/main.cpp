@@ -1,11 +1,11 @@
 /**
- * twr base-station firmware — USB audio bridge for the LilyGO T-TWR Plus.
+ * Walkie-Thinkie base-station firmware — USB audio bridge for the LilyGO T-TWR Plus.
  *
  *  RX : SA868 audio out (GPIO1, ADC1_CH0) -> 16 kHz/16-bit -> USB CDC frames, plus
  *       squelch state, RSSI, battery.
  *  OUT: host PCM (T_AUDIO_TX) -> I2S PDM -> board speaker (GPIO45)      [all builds]
- *                              -> I2S PDM -> SA868 mic in (GPIO18)      [twr-tx builds, keyed only]
- *  TX : twr-tx builds only. Boots disarmed; host must T_TX_ARM each session (10 min TTL),
+ *                              -> I2S PDM -> SA868 mic in (GPIO18)      [thinkie-tx builds, keyed only]
+ *  TX : thinkie-tx builds only. Boots disarmed; host must T_TX_ARM each session (10 min TTL),
  *       key with T_PTT; forced unkey after TX_MAX_KEY_MS or if the host goes away.
  *       TWR_TX_DISABLED builds contain no code path that drives PTT.
  */
@@ -205,7 +205,7 @@ static void playTask(void *)
     }
 }
 
-// ---- transmit control (twr-tx builds) ---------------------------------------
+// ---- transmit control (thinkie-tx builds) ---------------------------------------
 #if TX_BUILD
 static void unkey(const char *why)
 {
@@ -408,7 +408,7 @@ void setup()
     xTaskCreatePinnedToCore(adcTask,  "adc",  4096, nullptr, configMAX_PRIORITIES - 2, nullptr, 1);
     xTaskCreatePinnedToCore(playTask, "play", 4096, nullptr, configMAX_PRIORITIES - 3, nullptr, 1);
 
-    logf("twr-%s-%c up: band=%s rx=%lu", TX_BUILD ? "tx" : "rx", TWR_BOARD_ID,
+    logf("thinkie-%s-%c up: band=%s rx=%lu", TX_BUILD ? "tx" : "rx", TWR_BOARD_ID,
          twr.getBandDefinition() == SA8X8_VHF ? "VHF" : "UHF", radio.getStetting().recvFreq);
     sendStatus();
 }
