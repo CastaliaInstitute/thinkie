@@ -17,7 +17,7 @@ AUDIO_RATE_HZ = 16000
 AUDIO_FRAME_SAMPLES = 320
 FRAME_BYTES = AUDIO_FRAME_SAMPLES * 2
 
-_STATUS_FMT = "<BhHBBIIBBBIHHBBHB"
+_STATUS_FMT = "<BhHBBIIBBBIHHBBHBI"
 
 def crc8(data: bytes, crc: int = 0) -> int:
     for b in data:
@@ -25,6 +25,10 @@ def crc8(data: bytes, crc: int = 0) -> int:
         for _ in range(8):
             crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
     return crc
+
+def rx_frame(payload: bytes):
+    """T_AUDIO_RX payload -> (frame_idx, sql, pcm16 bytes)."""
+    return struct.unpack_from("<I", payload)[0], payload[4], payload[5:]
 
 def frame(t: int, payload: bytes = b"") -> bytes:
     hdr = struct.pack("<BH", t, len(payload))
@@ -42,7 +46,7 @@ class Status:
     sql: int; rssi: int; batt_mv: int; tx: int; tx_enabled: int
     rx_hz: int; tx_hz: int; sq: int; band: int; hw_rev: int
     uptime_ms: int; adc_dc: int; dropped: int
-    board_id: int; sink: int; play_queued: int; tx_build: int
+    board_id: int; sink: int; play_queued: int; tx_build: int; rx_frames: int
     @classmethod
     def unpack(cls, b: bytes) -> "Status":
         return cls(*struct.unpack(_STATUS_FMT, b[:struct.calcsize(_STATUS_FMT)]))
@@ -92,6 +96,7 @@ class ThinkieLink:
                 if crc8(buf[2:5 + n]) == buf[5 + n]:
                     self._last_rx = time.time()
                     if t == T_STATUS: self.status = Status.unpack(payload)
+                    elif t == T_AUDIO_RX: self.last_rx_idx = struct.unpack_from("<I", payload)[0]
                     elif t == T_LOG and self.log: self.log(payload.decode("utf-8", "replace"))
                     try: self.q.put_nowait((t, payload))
                     except queue.Full: pass
@@ -131,7 +136,7 @@ class ThinkieLink:
         self.send(T_SET_FREQ, struct.pack("<IIBBB", int(rx_hz), int(tx_hz or rx_hz), sq, ctcss_rx, ctcss_tx))
     def speaker(self, route_esp: bool, volume: int = 4):
         self.send(T_SPK, struct.pack("<BB", 1 if route_esp else 0, volume))
-    def gain(self, spk_pct: int = 100, mic_pct: int = 25):
+    def gain(self, spk_pct: int = 100, mic_pct: int = 15):
         self.send(T_GAIN, struct.pack("<BB", spk_pct, mic_pct))
     def flush(self): self.send(T_FLUSH)
     def tx_arm(self, on: bool = True): self.send(T_TX_ARM, struct.pack("<I", TX_ARM_MAGIC if on else 0))
@@ -174,6 +179,21 @@ class ThinkieLink:
                 try: self.ping()
                 except Exception: pass
         return seen_running
+
+    def wait_caught_up(self, timeout: float = 20.0) -> bool:
+        """After a transmission (and maybe a USB drop), wait until the audio stream has delivered
+        every frame the board captured up to now. Frames are consumed by whoever reads .q, so we
+        track the last idx seen by the reader thread."""
+        self.ping(); time.sleep(0.3)
+        target = self.status.rx_frames if self.status else 0
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if getattr(self, "last_rx_idx", -1) >= target - 2: return True
+            time.sleep(0.1)
+            if int((time.time() - t0) * 10) % 20 == 0:
+                try: self.ping()
+                except Exception: pass
+        return False
 
     def wait_status(self, timeout: float = 2.0) -> Status | None:
         self.ping(); t0 = time.time(); before = self.status

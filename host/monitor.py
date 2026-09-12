@@ -8,7 +8,7 @@
 """
 import argparse, os, subprocess, sys, time, wave, array, math
 sys.path.insert(0, os.path.dirname(__file__))
-from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, T_LOG, AUDIO_RATE_HZ
+from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, T_LOG, AUDIO_RATE_HZ, rx_frame
 
 def resolve(p):
     if p.startswith("/dev/"): return p
@@ -45,11 +45,11 @@ def main():
             elif t == T_LOG:
                 print(f"[board] {p.decode('utf-8','replace')}")
             elif t == T_AUDIO_RX:
-                seq = int.from_bytes(p[:2], "little")
-                if last_seq is not None and (seq - last_seq) & 0xFFFF != 1: gaps += 1
+                seq, fsql, raw = rx_frame(p)
+                if last_seq is not None and seq - last_seq != 1: gaps += 1
                 last_seq = seq
-                pcm = array.array("h", p[2:]); frames += 1
-                if wf and (not a.sql or (st and st.sql)):
+                pcm = array.array("h", raw); frames += 1
+                if wf and (not a.sql or fsql):
                     wf.writeframes(pcm.tobytes()); written += 1
                 if frames % 25 == 0 and not a.quiet:      # every 0.5 s
                     rms = math.sqrt(sum(x * x for x in pcm) / len(pcm))

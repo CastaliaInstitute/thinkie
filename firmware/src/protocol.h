@@ -12,7 +12,7 @@
 
 enum : uint8_t {
     // device -> host
-    T_AUDIO_RX = 0x01,  // u16 seq, then int16le PCM @ AUDIO_RATE_HZ
+    T_AUDIO_RX = 0x01,  // u32 frame_idx, u8 sql, then int16le PCM @ AUDIO_RATE_HZ (20 ms)
     T_STATUS   = 0x02,  // struct twr_status
     T_LOG      = 0x03,  // utf-8 text
     // host -> device
@@ -37,6 +37,7 @@ enum : uint8_t {
 
 #define AUDIO_RATE_HZ      16000
 #define AUDIO_FRAME_SAMPLES 320   // 20 ms
+#define RX_RING_S 60              // seconds of received audio kept in PSRAM for catch-up after a USB drop
 
 struct __attribute__((packed)) twr_status {
     uint8_t  sql;        // 1 = squelch open / carrier present (SA868_SQL low)
@@ -56,6 +57,7 @@ struct __attribute__((packed)) twr_status {
     uint8_t  sink;       // 0 = speaker, 1 = radio mic
     uint16_t play_queued;// AUDIO_TX frames waiting to play
     uint8_t  tx_build;   // 1 if firmware has TX code compiled in
+    uint32_t rx_frames;  // frames captured since boot (stream catches up to this after a reconnect)
 };
 
 static inline uint8_t twr_crc8(const uint8_t *p, size_t n, uint8_t crc = 0) {

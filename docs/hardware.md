@@ -106,3 +106,16 @@ draws a lot and gains little; use low power.
   NOAA speech peaks ≈ 7400. Recording at -21 dB mean / -9 dB peak — no gain change needed.
 - Local `whisper` (openai-whisper CLI, homebrew) base.en transcribes the NOAA
   feed well enough. `faster-whisper` not installed.
+
+## TWR-C (UHF), added 2026-09-12 evening
+- Third T-TWR Plus, MAC `dc:da:0c:16:d3:34`, S3R8 / 16 MB. Arrived running the user's
+  `meerya_esp32` build (enumerated as "Meerya Sonatino UAC", USB audio only, no CDC, OLED
+  dark). Needed BOOT-held reset to reach the ROM bootloader; bootloader+partition table
+  backed up to `firmware/factory/uhf-C/`. Now on `thinkie-tx-c`.
+- If a board keeps reporting `boot:0x0 (DOWNLOAD)` after flashing, BOOT is still held.
+
+## USB drops on key-up
+- Both boards' USB CDC links drop when *either* board keys (0.5 W, antennas next to the
+  cables/hub). PMU VBUS/charge limits did not change it → RF, not current. Mitigated in
+  firmware: autonomous clip transmit + PSRAM RX ring with catch-up; host reconnects by MAC.
+  Physical fix to try: ferrites, shorter cables, antennas away from the hub.

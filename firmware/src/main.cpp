@@ -35,7 +35,11 @@ static const int      PLAY_QUEUE_FRAMES = 150;        // 3 s of host audio buffe
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 static Adafruit_NeoPixel pixel(1, PIXELS_PIN, NEO_GRB + NEO_KHZ800);
 
-static QueueHandle_t audioQ;            // ADC frames  int16_t[AUDIO_FRAME_SAMPLES]
+struct __attribute__((packed)) rx_frame { uint32_t idx; uint8_t sql; int16_t pcm[AUDIO_FRAME_SAMPLES]; };
+static const uint32_t RX_RING_FRAMES = RX_RING_S * (AUDIO_RATE_HZ / AUDIO_FRAME_SAMPLES);
+static rx_frame *g_rxRing = nullptr;    // PSRAM ring of received audio, written by adcTask
+static volatile uint32_t g_rxFrames = 0;// frames captured since boot
+static uint32_t g_streamIdx = 0;        // next frame to send to the host; advances only when sent
 static QueueHandle_t playQ;             // host frames int16_t[AUDIO_FRAME_SAMPLES]
 static volatile uint16_t g_adcDc = 2048;
 static volatile uint16_t g_dropped = 0;
@@ -43,7 +47,7 @@ static int16_t  g_rssi = 0;
 static bool     g_radioOk = false;
 static bool     g_oledOk = false;
 static uint8_t  g_sink = 0;             // 0 speaker, 1 radio mic
-static uint8_t  g_spkGain = 100, g_micGain = 25;
+static uint8_t  g_spkGain = 100, g_micGain = 15;
 static bool     g_armed = false;
 static uint32_t g_armExpiry = 0;
 static bool     g_tx = false;
@@ -53,15 +57,16 @@ static size_t   g_clipLen = 0;             // samples
 static volatile int g_clipJob = 0;         // 0 idle, 1 play on speaker, 2 transmit
 
 // ---- framing -------------------------------------------------------------
-static void sendFrame(uint8_t type, const void *payload, uint16_t len)
+static bool sendFrame(uint8_t type, const void *payload, uint16_t len)
 {
-    if (!Serial) return;                         // host not connected (no DTR)
+    if (!Serial) return false;                   // host not connected (no DTR)
     uint8_t hdr[5] = { TWR_SYNC0, TWR_SYNC1, type, (uint8_t)(len & 0xFF), (uint8_t)(len >> 8) };
     uint8_t crc = twr_crc8(hdr + 2, 3);
     crc = twr_crc8((const uint8_t *)payload, len, crc);
-    Serial.write(hdr, sizeof(hdr));
-    if (len) Serial.write((const uint8_t *)payload, len);
-    Serial.write(crc);
+    size_t n = Serial.write(hdr, sizeof(hdr));
+    if (len) n += Serial.write((const uint8_t *)payload, len);
+    n += Serial.write(crc);
+    return n == (size_t)sizeof(hdr) + len + 1;   // short write = host FIFO full; caller may retry
 }
 
 static void logf(const char *fmt, ...)
@@ -102,6 +107,7 @@ static void sendStatus()
     s.sink       = g_sink;
     s.play_queued= playQ ? uxQueueMessagesWaiting(playQ) : 0;
     s.tx_build   = TX_BUILD;
+    s.rx_frames  = g_rxFrames;
     s.play_queued= g_clipJob ? 0xFFFF : s.play_queued;   // 0xFFFF = clip job running
     sendFrame(T_STATUS, &s, sizeof(s));
 }
@@ -154,7 +160,10 @@ static void adcTask(void *)
             if (fill == AUDIO_FRAME_SAMPLES) {
                 fill = 0;
                 g_adcDc = dc >> 8;
-                if (xQueueSend(audioQ, frame, 0) != pdTRUE) g_dropped++;
+                rx_frame *f = &g_rxRing[g_rxFrames % RX_RING_FRAMES];
+                f->idx = g_rxFrames; f->sql = TWRClass::isReceiving ? 1 : 0;
+                memcpy(f->pcm, frame, sizeof(frame));
+                g_rxFrames = g_rxFrames + 1;
             }
         }
     }
@@ -433,7 +442,7 @@ void setup()
 {
     Serial.setRxBufferSize(32768);           // host streams 32 kB/s of audio; loop can stall ~50 ms
     Serial.begin(115200);
-    Serial.setTxTimeoutMs(5);
+    Serial.setTxTimeoutMs(20);
     delay(300);
 
     pixel.begin(); updateLed(false);
@@ -469,7 +478,8 @@ void setup()
     twr.routingSpeakerChannel(TWRClass::TWR_RADIO_TO_SPK);
     twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_RADIO);
 
-    audioQ = xQueueCreate(8, AUDIO_FRAME_SAMPLES * sizeof(int16_t));
+    g_rxRing = (rx_frame *)ps_malloc(RX_RING_FRAMES * sizeof(rx_frame));
+    if (!g_rxRing) { while (1) { logf("no PSRAM for RX ring"); delay(1000); } }
     playQ  = xQueueCreate(PLAY_QUEUE_FRAMES, AUDIO_FRAME_SAMPLES * sizeof(int16_t));
     if (!adcStart()) logf("ADC continuous init failed");
     if (!i2sStart()) logf("I2S PDM init failed");
@@ -483,8 +493,6 @@ void setup()
 
 void loop()
 {
-    static int16_t frame[AUDIO_FRAME_SAMPLES];
-    static uint16_t seq = 0;
     static uint32_t lastStatus = 0, lastOled = 0, lastRssi = 0;
     static bool lastSql = false;
     static uint8_t rssiFails = 0;
@@ -492,12 +500,20 @@ void loop()
     twr.tick();
     pollHost();
 
-    while (xQueueReceive(audioQ, frame, 0) == pdTRUE) {
-        if (g_tx) continue;                                   // nothing useful on the ADC while keyed
-        uint8_t pkt[2 + AUDIO_FRAME_SAMPLES * 2];
-        memcpy(pkt, &seq, 2); seq++;
-        memcpy(pkt + 2, frame, sizeof(frame));
-        sendFrame(T_AUDIO_RX, pkt, sizeof(pkt));
+    // Stream captured frames to the host. The cursor only moves when the host is connected, so
+    // after a USB drop the backlog (up to RX_RING_S) is delivered at up to 12 frames per loop.
+    {
+        uint32_t have = g_rxFrames;
+        if (have - g_streamIdx > RX_RING_FRAMES - 5) {           // ring aged out: count it only if a host was there to miss it
+            if (Serial) g_dropped += have - g_streamIdx;
+            g_streamIdx = have - (RX_RING_FRAMES - 5);
+        }
+        int budget = 4;                                            // ~4x real time when catching up
+        while (Serial && g_streamIdx < have && budget--) {
+            rx_frame *f = &g_rxRing[g_streamIdx % RX_RING_FRAMES];
+            if (f->idx == g_streamIdx && !sendFrame(T_AUDIO_RX, f, sizeof(rx_frame))) break;   // FIFO full: retry next loop
+            g_streamIdx++;
+        }
     }
 
     uint32_t now = millis();

@@ -15,8 +15,9 @@ Product page: https://castaliainstitute.github.io/thinkie/
 - [x] Full loop, over the air, verified at both ends: question transmitted from one board, received and
       transcribed *word‑for‑word* on the other, answered by Gemini, reply transmitted back and transcribed
       again from what the far board heard
+- [x] Survives USB dropping mid‑transmission (autonomous clip TX on the board, 60 s receive ring in PSRAM with catch‑up)
 - [ ] Battery‑only / WiFi operation (currently tethered to the Mac over USB)
-- [ ] UHF board for FRS/GMRS handhelds
+- [ ] UHF board (TWR‑C, flashed) for FRS/GMRS handhelds — needs a battery
 
 ## Layout
 - `docs/` — hardware notes (pin map, bench findings), architecture, regulatory notes, prior work; `docs/index.html` is the product page

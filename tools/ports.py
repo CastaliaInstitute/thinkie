@@ -12,21 +12,21 @@ import re, subprocess, sys
 BOARDS = {
     "A": "3c:84:27:cc:18:1c",
     "B": "48:ca:43:35:b5:b8",
+    "C": "dc:da:0c:16:d3:34",   # UHF T-TWR Plus (was running Sonatino UAC firmware)
 }
 
 def usb_serial_ports():
-    """Return {mac: port} for Espressif USB-JTAG/serial units."""
+    """Return {mac: port} for Espressif USB-JTAG/serial units (and anything else whose USB
+    serial number is a MAC). ioreg lists the callout device nested under the interface, so
+    walk the tree in order and attribute each /dev/cu.* to the last MAC-shaped serial seen."""
     out = subprocess.run(["ioreg", "-r", "-c", "IOUSBHostDevice", "-l", "-w0"],
                          capture_output=True, text=True).stdout
-    result = {}
-    # Each device subtree: find serial number + any IOCalloutDevice under it
-    for block in re.split(r"\n\+-o ", out):
-        if "USB JTAG_serial debug unit" not in block:
-            continue
-        m = re.search(r'"USB Serial Number" = "([0-9A-Fa-f:]+)"', block)
-        p = re.search(r'"IOCalloutDevice" = "(/dev/cu\.[^"]+)"', block)
-        if m and p:
-            result[m.group(1).lower()] = p.group(1)
+    result, cur = {}, None
+    for line in out.splitlines():
+        m = re.search(r'"USB Serial Number" = "([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})"', line)
+        if m: cur = m.group(1).lower(); continue
+        p = re.search(r'"IOCalloutDevice" = "(/dev/cu\.[^"]+)"', line)
+        if p and cur: result[cur] = p.group(1)
     return result
 
 def main():

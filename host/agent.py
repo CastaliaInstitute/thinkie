@@ -14,7 +14,7 @@ synthesises it, and plays it back — through the board speaker (default, no RF)
 """
 import argparse, os, sys, time, wave
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ, FRAME_BYTES
+from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ, FRAME_BYTES, rx_frame
 import ai_gemini
 
 MIN_CLIP_S = 0.6        # ignore squelch blips shorter than this
@@ -27,35 +27,31 @@ def save_wav(path, pcm):
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(AUDIO_RATE_HZ); w.writeframes(pcm)
 
 def listen_for_utterance(link: ThinkieLink, quiet=False, max_clip=MAX_CLIP_S) -> bytes:
-    """Block until a squelch-delimited clip is captured; return s16le PCM."""
+    """Block until a squelch-delimited clip is captured; return s16le PCM.
+    Uses the squelch flag carried in every audio frame, so it is correct even when frames
+    arrive late in a burst after a USB reconnect."""
     pre = []                # rolling 0.3 s pre-roll so we don't lose the first syllable
-    clip = bytearray(); active = False; closed_at = None; t_open = None
+    clip = bytearray(); active = False; closed_frames = 0; open_frames = 0
+    hang = int(HANG_S / 0.02); max_frames = int(max_clip / 0.02)
     while True:
         try: t, p = link.q.get(timeout=1.0)
         except Exception: continue
-        if t == T_STATUS:
-            st = Status.unpack(p)
-            if st.sql and not active:
-                active = True; t_open = time.time(); closed_at = None
-                clip = bytearray(b"".join(pre))
-                if not quiet: print(f"  squelch open (rssi {st.rssi})", flush=True)
-            elif st.sql and active:
-                closed_at = None                       # squelch blip: still talking
-            elif not st.sql and active and closed_at is None:
-                closed_at = time.time()
-        elif t == T_AUDIO_RX:
-            pcm = p[2:]
+        if t != T_AUDIO_RX: continue
+        idx, sql, pcm = rx_frame(p)
+        if not active:
             pre.append(pcm); pre = pre[-15:]
-            if active:
-                clip += pcm
-                if closed_at and time.time() - closed_at > HANG_S:
-                    dur = len(clip) / (2 * AUDIO_RATE_HZ)
-                    if dur >= MIN_CLIP_S: return bytes(clip)
-                    if not quiet: print(f"  (blip {dur:.2f}s ignored)", flush=True)
-                    active = False; clip = bytearray()
-                elif not closed_at and time.time() - t_open > max_clip:
-                    return bytes(clip)
-        # squelch reopened during the hang -> keep going (closed_at reset by STATUS above)
+            if sql:
+                active = True; open_frames = 0; closed_frames = 0
+                clip = bytearray(b"".join(pre))
+                if not quiet: print(f"  squelch open (frame {idx}, rssi {link.status.rssi if link.status else '?'})", flush=True)
+            continue
+        clip += pcm; open_frames += 1
+        closed_frames = 0 if sql else closed_frames + 1
+        if closed_frames >= hang or open_frames >= max_frames:
+            dur = len(clip) / (2 * AUDIO_RATE_HZ)
+            if dur >= MIN_CLIP_S: return bytes(clip)
+            if not quiet: print(f"  (blip {dur:.2f}s ignored)", flush=True)
+            active = False; clip = bytearray()
 
 def main():
     ap = argparse.ArgumentParser()
@@ -124,7 +120,7 @@ def main():
 
         if a.tx:
             from say_over_air import transmit
-            secs = transmit(tx, pcm, mic_gain=30)
+            secs = transmit(tx, pcm, mic_gain=15)
         else:
             tx.speaker(True, a.vol)
             secs = tx.play_pcm(pcm)

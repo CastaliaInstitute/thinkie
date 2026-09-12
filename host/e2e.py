@@ -10,7 +10,7 @@
 """
 import argparse, os, sys, threading, time, wave
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ
+from thinkie_link import ThinkieLink, Status, T_AUDIO_RX, T_STATUS, AUDIO_RATE_HZ, rx_frame
 from say_over_air import transmit, tx_allowed
 from agent import listen_for_utterance, save_wav
 import ai_gemini
@@ -25,14 +25,14 @@ class Capture:
         while not self._stop.is_set():
             try: t, p = self.link.q.get(timeout=0.2)
             except Exception: continue
-            if t == T_AUDIO_RX: self.buf.extend(p[2:])
+            if t == T_AUDIO_RX: self.buf.extend(rx_frame(p)[2])
     def __exit__(self, *a): self._stop.set(); self.t.join()
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("question"); ap.add_argument("--freq", type=float, required=True)
     ap.add_argument("--callsign", default=None); ap.add_argument("--save", default=None)
-    ap.add_argument("--mic-gain", type=int, default=30)
+    ap.add_argument("--mic-gain", type=int, default=15)
     ap.add_argument("--ai", default="A", help="board that plays the AI station (receives question, transmits answer)")
     a = ap.parse_args()
     hz = int(round(a.freq * 1e6))
@@ -58,6 +58,7 @@ def main():
     B.tx_arm(True); time.sleep(0.2)
     lst = threading.Thread(target=lambda: setattr(main, "clip", listen_for_utterance(A, quiet=True))); lst.start()
     transmit(B, q_pcm, a.mic_gain); B.tx_arm(False)
+    A.wait_caught_up()
     lst.join(15); clip = getattr(main, "clip", b"")
     print(f"A heard {len(clip)/(2*AUDIO_RATE_HZ):.1f}s (rssi {A.status.rssi})")
     if a.save: save_wav(os.path.join(a.save, "e2e_A_rx.wav"), clip)
@@ -75,6 +76,7 @@ def main():
     with Capture(B) as cap:
         keyed = transmit(A, ans_pcm, a.mic_gain)
         time.sleep(0.5)
+        B.wait_caught_up()                          # B's USB may have dropped; pull the backlog
     A.tx_arm(False)
     print(f"A keyed {keyed:.1f}s; B captured {len(cap.buf)/(2*AUDIO_RATE_HZ):.1f}s (rssi {B.status.rssi})")
     if a.save: save_wav(os.path.join(a.save, "e2e_B_rx.wav"), bytes(cap.buf))

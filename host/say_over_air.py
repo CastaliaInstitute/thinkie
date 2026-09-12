@@ -19,7 +19,7 @@ def tx_allowed(hz: int) -> bool:
 from play import load_wav_16k, tone
 import ai_gemini
 
-def transmit(link: ThinkieLink, pcm: bytes, mic_gain: int = 25, lead_s: float = 0.3) -> float:
+def transmit(link: ThinkieLink, pcm: bytes, mic_gain: int = 15, lead_s: float = 0.3) -> float:
     """Upload the clip to the board, then let the board key/play/unkey on its own.
     A USB hiccup mid-transmission no longer truncates the audio. Returns seconds elapsed."""
     link.gain(100, mic_gain)
@@ -36,7 +36,7 @@ def main():
     ap.add_argument("--callsign", default=None, help="station ID (required on amateur freqs, not on MURS)")
     ap.add_argument("--freq", type=float, help="MHz; 2 m band or a MURS channel")
     ap.add_argument("--wav"); ap.add_argument("--tone", type=float); ap.add_argument("--secs", type=float, default=1.0)
-    ap.add_argument("--mic-gain", type=int, default=25, help="percent of full scale into the SA868 mic path")
+    ap.add_argument("--mic-gain", type=int, default=15, help="percent of full scale into the SA868 mic path")
     ap.add_argument("--no-id", action="store_true", help="omit spoken callsign (tone tests only)")
     a = ap.parse_args()
 
