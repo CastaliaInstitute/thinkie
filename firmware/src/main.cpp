@@ -20,6 +20,9 @@
 #ifndef TWR_BOARD_ID
 #error "Build with -DTWR_BOARD_ID=65 (A) or 66 (B)"
 #endif
+#ifndef TWR_HW_REV
+#define TWR_HW_REV 21          // 20 = T-TWR Plus Rev2.0 (radio on DC3 boost, no audio matrix), 21 = Rev2.1
+#endif
 #ifdef TWR_TX_DISABLED
 #define TX_BUILD 0
 #else
@@ -446,7 +449,7 @@ void setup()
     delay(300);
 
     pixel.begin(); updateLed(false);
-    bool ok = twr.begin(LILYGO_TWR_REV2_1);     // auto-detect samples IO2 and misreads; both boards are Rev2.1
+    bool ok = twr.begin(TWR_HW_REV == 20 ? LILYGO_TWR_REV2_0 : LILYGO_TWR_REV2_1);   // auto-detect samples IO2 and misreads
     if (!ok) { while (1) { logf("PMU/board init failed"); delay(1000); } }
     // Keep USB draw inside a hub port's budget: the PA sags VBAT on key-up and the charger
     // ramping to the library's 2 A VBUS limit trips the port (seen as CDC disconnects on PTT).
@@ -459,12 +462,23 @@ void setup()
 #if TX_BUILD
     pinMode(BUTTON_PTT_PIN, INPUT_PULLUP);
 #endif
-    radio.setPins(SA868_PTT_PIN, SA868_PD_PIN);
+    if (TWR_HW_REV == 20) radio.setPins(SA868_PTT_PIN, SA868_PD_PIN, SA868_RF_PIN);
+    else                  radio.setPins(SA868_PTT_PIN, SA868_PD_PIN);
     g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());   // leaves PTT high (idle)
     if (!g_radioOk) {
         while (!g_radioOk) {
             logf("SA868 not responding (VBAT ok?)"); logPmu(); drawOled();
-            delay(5000);
+            // raw probe so the host can see what (if anything) the module says
+            while (RadioSerial.available()) RadioSerial.read();
+            RadioSerial.print("AT+DMOCONNECT\r\n"); delay(300);
+            char hex[120]; int n = 0;
+            while (RadioSerial.available() && n < 36) n += snprintf(hex + n, sizeof(hex) - n, "%02x ", RadioSerial.read());
+            logf("probe 9600 AT+DMOCONNECT -> %s (PD=%d DC3=%d %umV oled=0x%02x rxidle=%d)", n ? hex : "(no bytes)", digitalRead(SA868_PD_PIN), twr.isEnableDC3(), twr.getDC3Voltage(), twr.getOLEDAddress(), digitalRead(SA868_RX_PIN));
+            RadioSerial.updateBaudRate(115200); RadioSerial.print("AT+DMOCONNECT\r\n"); RadioSerial.print("\r\n"); delay(300);
+            n = 0; while (RadioSerial.available() && n < 36) n += snprintf(hex + n, sizeof(hex) - n, "%02x ", RadioSerial.read());
+            logf("probe 115200 -> %s", n ? hex : "(no bytes)");
+            RadioSerial.updateBaudRate(9600);
+            delay(4700);
             g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());
         }
         logf("SA868 came up after retry");

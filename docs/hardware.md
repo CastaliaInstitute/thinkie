@@ -119,3 +119,8 @@ draws a lot and gains little; use low power.
   cables/hub). PMU VBUS/charge limits did not change it → RF, not current. Mitigated in
   firmware: autonomous clip transmit + PSRAM RX ring with catch-up; host reconnects by MAC.
   Physical fix to try: ferrites, shorter cables, antennas away from the hub.
+- C's SA868 is **silent**: no reply to `AT+DMOCONNECT` (NiceRF) or `AT+MODEL` (OpenRTX) at
+  9600 or 115200, with PD high, DC3 boost on (3.4 V, Rev2.0 path), VBAT 4.2 V, UART RX idle
+  high. OLED at 0x3C (Rev2.0 doesn't encode band). Most likely the Rev2.0 "community"
+  variant with a blank module for OpenRTX (`sa8x8-fw`), which on Rev2.0 needs external
+  programming wiring. Firmware env `thinkie-tx-c` builds with `-DTWR_HW_REV=20`.
