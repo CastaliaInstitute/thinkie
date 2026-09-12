@@ -76,3 +76,17 @@ draws a lot and gains little; use low power.
 - Examples of interest: `SA868_ATDebug_Example` (AT passthrough),
   `SA868_ESPSendAudio_Example` (ESP→radio audio), `WAV_Player` (ESP→speaker)
 - Schematics: `schematic/T-TWR-Plus_Rev2.1.pdf`
+
+## Bench findings 2026-09-12 (Stage 1 firmware on TWR-A)
+- Custom RX-only firmware boots, `twr.begin()` detects **Rev2.1**, band **VHF**
+  (OLED at 0x3C), SA868 answers AT. 16 kHz audio streams over USB CDC with
+  0 gaps / 0 drops / 0 CRC errors.
+- `SA868_SQL` (IO2) tracks squelch: goes OPEN with sq=0. Confirmed usable as
+  utterance boundary.
+- **With USB only (no battery)**: `batt=0mV`, `AT+RSSI?` → 0, and IO1 audio is
+  ~silent even with squelch fully open (DC bias ≈ 331 counts ≈ 0.25 V, expected
+  ~half-rail). Schematic: SA868 VCC pin 8 = VBAT; AF_OUT → 10 nF → 10K/10K
+  offset network + 1N4148 clamps → `AUDIO2ESP` (IO1). RF/audio section is dead
+  without a battery. **Attach 18650/21700 before any RX test.**
+- Radio volume (AT+DMOSETVOLUME) did not change the IO1 level in that state;
+  re-check with battery whether the ESP tap is pre- or post-volume.

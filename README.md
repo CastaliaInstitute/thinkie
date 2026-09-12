@@ -11,12 +11,13 @@ boards (ESP32-S3 + SA868 VHF transceiver module).
 - `reference/` — copies of that prior code, for reference only
 - `tools/` — host probing scripts (read-only)
 - `firmware/` — custom T-TWR firmware (PlatformIO) + factory backups
-- `host/` — the Mac-side agent
+- `host/` — the Mac-side agent (`twr_link.py` protocol, `monitor.py` bench tool)
 - `.claude/agents/twr.md` — Claude Code subagent that knows the boards and the rules
 
 ## Status
 - [x] Both boards enumerated, identified, factory firmware backed up
-- [ ] Stage 1: receive-only — stream radio audio to the Mac, transcribe it
+- [x] Stage 1a: RX-only firmware on TWR-A streams 16 kHz audio + squelch state over USB (`host/monitor.py`)
+- [ ] Stage 1b: hear a real signal (needs battery + antenna on TWR-A), record, transcribe
 - [ ] Stage 2: STT → Claude → TTS on the Mac, playback through the *board speaker* (no RF)
 - [ ] Stage 3: transmit the reply over air (needs explicit go-ahead + license/dummy-load plan)
 
