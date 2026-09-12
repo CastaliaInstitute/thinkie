@@ -7,6 +7,8 @@ boards (ESP32-S3 + SA868 VHF transceiver module).
 - `docs/hardware.md` — what's actually on the bench: ports, chips, firmware, pin map
 - `docs/architecture.md` — the loop design and the staged plan (this file's summary is below)
 - `docs/regulatory.md` — what we can and can't transmit
+- `docs/prior-work.md` — the June 2026 UHF channel‑6 bridge this builds on
+- `reference/` — copies of that prior code, for reference only
 - `tools/` — host probing scripts (read-only)
 - `firmware/` — custom T-TWR firmware (PlatformIO) + factory backups
 - `host/` — the Mac-side agent
