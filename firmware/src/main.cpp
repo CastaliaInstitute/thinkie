@@ -224,7 +224,7 @@ void setup()
     Serial.setTxTimeoutMs(5);        // never block the loop on a stalled host
     delay(300);
 
-    bool ok = twr.begin();
+    bool ok = twr.begin(LILYGO_TWR_REV2_1);   // auto-detect samples IO2 and misreads; both boards are Rev2.1
     if (!ok) { while (1) { logf("PMU/board init failed"); delay(1000); } }
 
     uint8_t addr = twr.getOLEDAddress();
