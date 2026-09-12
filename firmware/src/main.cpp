@@ -54,6 +54,14 @@ static void logf(const char *fmt, ...)
     sendFrame(T_LOG, buf, min(n, (int)sizeof(buf)));
 }
 
+static void logPmu()
+{
+    logf("PMU: batt=%umV(%u%%) conn=%d vbus=%umV(in=%d) vsys=%umV chg=%d done=%d chgcur=%u chgstat=%u",
+         twr.getBattVoltage(), twr.getBatteryPercent(), twr.isBatteryConnect(),
+         twr.getVbusVoltage(), twr.isVbusIn(), twr.getSystemVoltage(),
+         twr.isCharging(), twr.isChargeDone(), twr.getChargerConstantCurr(), twr.getChargerStatus());
+}
+
 static void sendStatus()
 {
     twr_status s = {};
@@ -136,6 +144,7 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint16_t len)
     switch (type) {
     case T_PING:
         sendStatus();
+        logPmu();
         break;
     case T_SET_FREQ: {
         if (len < 11) { logf("SET_FREQ: short payload"); return; }
@@ -231,7 +240,15 @@ void setup()
         radio.setPins(SA868_PTT_PIN, SA868_PD_PIN, SA868_RF_PIN);
         g_radioOk = radio.begin(RadioSerial, SA8X8_VHF);
     }
-    if (!g_radioOk) { while (1) { logf("SA868 not responding (battery attached?)"); drawOled(); delay(1000); } }
+    if (!g_radioOk) {
+        // Keep running so the host can still read PMU state; retry the radio every 5 s.
+        while (!g_radioOk) {
+            logf("SA868 not responding (VBAT ok? antenna?)"); logPmu(); drawOled();
+            delay(5000);
+            g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());
+        }
+        logf("SA868 came up after retry");
+    }
 
     radio.lowPower();                                    // config only; no TX path exists
     radio.setBandWidth(12500);
