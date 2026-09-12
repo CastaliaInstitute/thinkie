@@ -8,6 +8,7 @@
  */
 #include <Arduino.h>
 #include <U8g2lib.h>
+#include <Adafruit_NeoPixel.h>
 #include <driver/adc.h>
 #include "LilyGo_TWR.h"
 #include "protocol.h"
@@ -25,6 +26,7 @@ static const uint8_t  DEFAULT_SQ    = 1;
 // ---- globals -------------------------------------------------------------
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
+static Adafruit_NeoPixel pixel(1, PIXELS_PIN, NEO_GRB + NEO_KHZ800);
 static QueueHandle_t audioQ;            // int16_t[AUDIO_FRAME_SAMPLES] frames
 static volatile uint16_t g_adcDc = 2048;
 static volatile uint16_t g_dropped = 0;
@@ -203,16 +205,18 @@ static void drawOled()
     char line[32];
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x12_tr);
-    u8g2.drawStr(0, 10, "TWR-A  RX ONLY");
-    u8g2.drawStr(90, 10, Serial ? "USB" : "---");
+    u8g2.drawStr(0, 10, "RX ONLY");
+    u8g2.drawStr(56, 10, Serial ? "USB" : "---");
+    u8g2.setFont(u8g2_font_inb38_mr);
+    u8g2.drawStr(92, 44, "A");
     u8g2.setFont(u8g2_font_10x20_tr);
     uint32_t f = radio.getStetting().recvFreq;
-    snprintf(line, sizeof(line), "%3lu.%04lu", f / 1000000UL, (f % 1000000UL) / 100);
+    snprintf(line, sizeof(line), "%3lu.%03lu", f / 1000000UL, (f % 1000000UL) / 1000);
     u8g2.drawStr(0, 32, line);
     u8g2.setFont(u8g2_font_6x12_tr);
-    snprintf(line, sizeof(line), "SQL %s  RSSI %d", TWRClass::isReceiving ? "OPEN" : "----", g_rssi);
+    snprintf(line, sizeof(line), "SQL %s", TWRClass::isReceiving ? "OPEN" : "----");
     u8g2.drawStr(0, 48, line);
-    snprintf(line, sizeof(line), "%umV  dc%u drop%u", twr.getBattVoltage(), g_adcDc, g_dropped);
+    snprintf(line, sizeof(line), "RSSI %d %umV", g_rssi, twr.getBattVoltage());
     u8g2.drawStr(0, 62, line);
     u8g2.sendBuffer();
 }
@@ -224,6 +228,7 @@ void setup()
     Serial.setTxTimeoutMs(5);        // never block the loop on a stalled host
     delay(300);
 
+    pixel.begin(); pixel.setPixelColor(0, pixel.Color(0, 0, 40)); pixel.show();   // blue = board A
     bool ok = twr.begin(LILYGO_TWR_REV2_1);   // auto-detect samples IO2 and misreads; both boards are Rev2.1
     if (!ok) { while (1) { logf("PMU/board init failed"); delay(1000); } }
 
@@ -289,6 +294,7 @@ void loop()
     if (sql != lastSql) { lastSql = sql; sendStatus(); }
     if (now - lastRssi >= 500)  { lastRssi = now; g_rssi = radio.getRSSI(); }
     if (now - lastStatus >= 1000) { lastStatus = now; sendStatus(); }
-    if (now - lastOled >= 250)  { lastOled = now; drawOled(); }
+    if (now - lastOled >= 250)  { lastOled = now; drawOled();
+        pixel.setPixelColor(0, sql ? pixel.Color(0, 60, 0) : pixel.Color(0, 0, 40)); pixel.show(); }
     delay(1);
 }
