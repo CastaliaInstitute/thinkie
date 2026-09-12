@@ -73,8 +73,8 @@ class TwrLink:
         while not self._stop.is_set():
             try:
                 chunk = self.ser.read(4096)
-            except serial.SerialException:
-                break
+            except (serial.SerialException, OSError, TypeError):
+                time.sleep(0.2); continue          # port being reopened by send()/reconnect()
             if not chunk: continue
             buf += chunk
             while True:
@@ -98,7 +98,26 @@ class TwrLink:
     # ---- commands ----
     def send(self, t: int, payload: bytes = b""):
         with self._wlock:
-            self.ser.write(frame(t, payload))
+            try:
+                self.ser.write(frame(t, payload))
+            except (serial.SerialException, OSError) as e:
+                # USB CDC dropped (seen when a board keys up next to the cable). The firmware
+                # unkeys itself when DTR goes away; we reopen and let the caller decide what to redo.
+                self.reconnect(str(e))
+                self.ser.write(frame(t, payload))
+
+    def reconnect(self, why: str = ""):
+        self.dropped = getattr(self, "dropped", 0) + 1
+        for i in range(40):                      # up to ~8 s for re-enumeration
+            try:
+                try: self.ser.close()
+                except Exception: pass
+                self.ser = serial.Serial(self.port, 115200, timeout=0.05); self.ser.dtr = True
+                if self.log: self.log(f"(link) reopened {self.port} after: {why[:60]}")
+                return
+            except (serial.SerialException, OSError):
+                time.sleep(0.2)
+        raise RuntimeError(f"could not reopen {self.port}")
 
     def ping(self): self.send(T_PING)
     def set_freq(self, rx_hz: int, tx_hz: int | None = None, sq: int = 1, ctcss_rx: int = 0, ctcss_tx: int = 0):

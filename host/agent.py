@@ -39,6 +39,8 @@ def listen_for_utterance(link: TwrLink, quiet=False, max_clip=MAX_CLIP_S) -> byt
                 active = True; t_open = time.time(); closed_at = None
                 clip = bytearray(b"".join(pre))
                 if not quiet: print(f"  squelch open (rssi {st.rssi})", flush=True)
+            elif st.sql and active:
+                closed_at = None                       # squelch blip: still talking
             elif not st.sql and active and closed_at is None:
                 closed_at = time.time()
         elif t == T_AUDIO_RX:
