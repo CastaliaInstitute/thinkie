@@ -90,3 +90,19 @@ draws a lot and gains little; use low power.
   without a battery. **Attach 18650/21700 before any RX test.**
 - Radio volume (AT+DMOSETVOLUME) did not change the IO1 level in that state;
   re-check with battery whether the ESP tap is pre- or post-volume.
+
+## Bench findings, later 2026-09-12 (battery in)
+- A "battery" reading of ~0.9–1.0 V with `chgstat=0` (trickle) means the cell is
+  flat or not seated; the SA868 (VCC = VBAT) goes silent. A good cell reads
+  ~4.1–4.4 V. Swapping cells between boards moved the fault with the cell.
+- Factory firmware only probes the SA868 once at boot ("SA8X8 failed" on OLED);
+  reset the board after fixing the cell. Custom firmware now re-inits on recovery.
+- `twr.begin()` auto-detect misread a Rev2.1 board as Rev2.0 once (it samples
+  IO2 at boot). Pinned to `LILYGO_TWR_REV2_1` in firmware.
+- RSSI noise floor ≈ 15–20 without antenna, ≈ 55 with antenna in this room;
+  NOAA on 162.450 MHz reads ≈ 72 and opens squelch at sq=1 only intermittently
+  (use sq=0 while listening to a known-continuous source).
+- ADC DC bias with the radio powered ≈ 760 counts. Open-squelch hiss ≈ 3600 RMS;
+  NOAA speech peaks ≈ 7400. Recording at -21 dB mean / -9 dB peak — no gain change needed.
+- Local `whisper` (openai-whisper CLI, homebrew) base.en transcribes the NOAA
+  feed well enough. `faster-whisper` not installed.

@@ -17,7 +17,7 @@ boards (ESP32-S3 + SA868 VHF transceiver module).
 ## Status
 - [x] Both boards enumerated, identified, factory firmware backed up
 - [x] Stage 1a: RX-only firmware on TWR-A streams 16 kHz audio + squelch state over USB (`host/monitor.py`)
-- [ ] Stage 1b: hear a real signal (needs battery + antenna on TWR-A), record, transcribe
+- [x] Stage 1b: NOAA weather (162.450 MHz) received on TWR-A, recorded via USB, transcribed with local whisper
 - [ ] Stage 2: STT → Claude → TTS on the Mac, playback through the *board speaker* (no RF)
 - [ ] Stage 3: transmit the reply over air (needs explicit go-ahead + license/dummy-load plan)
 
