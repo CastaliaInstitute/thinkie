@@ -124,3 +124,7 @@ draws a lot and gains little; use low power.
   high. OLED at 0x3C (Rev2.0 doesn't encode band). Most likely the Rev2.0 "community"
   variant with a blank module for OpenRTX (`sa8x8-fw`), which on Rev2.0 needs external
   programming wiring. Firmware env `thinkie-tx-c` builds with `-DTWR_HW_REV=20`.
+- **C is a T-TWR Rev2.0** (silkscreen confirmed). Rev2.0 has no audio switching matrix,
+  so the ESP cannot drive the radio mic path — unusable as a Walkie-Thinkie base station
+  even with a working SA868. Retired. For UHF get a Rev2.1 UHF and build `thinkie-tx-c`
+  with `-DTWR_HW_REV=21`.

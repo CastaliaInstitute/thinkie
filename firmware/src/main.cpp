@@ -468,16 +468,23 @@ void setup()
     if (!g_radioOk) {
         while (!g_radioOk) {
             logf("SA868 not responding (VBAT ok?)"); logPmu(); drawOled();
-            // raw probe so the host can see what (if anything) the module says
-            while (RadioSerial.available()) RadioSerial.read();
-            RadioSerial.print("AT+DMOCONNECT\r\n"); delay(300);
-            char hex[120]; int n = 0;
-            while (RadioSerial.available() && n < 36) n += snprintf(hex + n, sizeof(hex) - n, "%02x ", RadioSerial.read());
-            logf("probe 9600 AT+DMOCONNECT -> %s (PD=%d DC3=%d %umV oled=0x%02x rxidle=%d)", n ? hex : "(no bytes)", digitalRead(SA868_PD_PIN), twr.isEnableDC3(), twr.getDC3Voltage(), twr.getOLEDAddress(), digitalRead(SA868_RX_PIN));
-            RadioSerial.updateBaudRate(115200); RadioSerial.print("AT+DMOCONNECT\r\n"); RadioSerial.print("\r\n"); delay(300);
-            n = 0; while (RadioSerial.available() && n < 36) n += snprintf(hex + n, sizeof(hex) - n, "%02x ", RadioSerial.read());
-            logf("probe 115200 -> %s", n ? hex : "(no bytes)");
-            RadioSerial.updateBaudRate(9600);
+            // raw probe so the host can see what (if anything) the module says.
+            // NiceRF AT fw: PD high = on, "AT+DMOCONNECT" -> "+DMOCONNECT:0".
+            // OpenRTX sa8x8-fw: module reset = PD pulsed high then low; "AT" -> "OK", "AT+VERSION" -> "sa8x8-fw/v..".
+            auto probe = [&](const char *tag, const char *cmd) {
+                while (RadioSerial.available()) RadioSerial.read();
+                RadioSerial.print(cmd); delay(300);
+                char hex[120]; int n = 0; String txt;
+                while (RadioSerial.available() && n < 40) { uint8_t c = RadioSerial.read(); n += snprintf(hex + n, sizeof(hex) - n, "%02x ", c); if (c >= 32 && c < 127) txt += (char)c; }
+                logf("probe %s %s -> %s %s", tag, cmd, n ? hex : "(no bytes)", txt.c_str());
+            };
+            for (int pol = 0; pol < 2; pol++) {
+                if (pol == 0) { digitalWrite(SA868_PD_PIN, HIGH); delay(500); }
+                else          { digitalWrite(SA868_PD_PIN, HIGH); delay(100); digitalWrite(SA868_PD_PIN, LOW); delay(500); }
+                const char *tag = pol == 0 ? "PD=H" : "PD=pulse->L";
+                probe(tag, "AT\r\n"); probe(tag, "AT+VERSION\r\n"); probe(tag, "AT+DMOCONNECT\r\n");
+            }
+            digitalWrite(SA868_PD_PIN, HIGH);
             delay(4700);
             g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());
         }
