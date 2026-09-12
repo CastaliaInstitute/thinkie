@@ -292,7 +292,25 @@ void loop()
     uint32_t now = millis();
     bool sql = TWRClass::isReceiving;
     if (sql != lastSql) { lastSql = sql; sendStatus(); }
-    if (now - lastRssi >= 500)  { lastRssi = now; g_rssi = radio.getRSSI(); }
+    // RSSI poll; if the radio stops answering (VBAT sag), back off and re-init once power is back.
+    static uint8_t rssiFails = 0;
+    uint32_t rssiPeriod = rssiFails >= 3 ? 5000 : 500;
+    if (now - lastRssi >= rssiPeriod) {
+        lastRssi = now;
+        int r = radio.getRSSI();
+        if (r > 0) { g_rssi = r; rssiFails = 0; }
+        else {
+            g_rssi = 0;
+            if (rssiFails < 3) rssiFails++;
+            if (rssiFails >= 3 && twr.getBattVoltage() > 3300) {
+                logf("radio silent; re-init (batt=%umV)", twr.getBattVoltage());
+                if (radio.begin(RadioSerial, twr.getBandDefinition())) {
+                    radio.setGroup(false, DEFAULT_RX_HZ, DEFAULT_RX_HZ, E_CXCSS_NONE, DEFAULT_SQ, E_CXCSS_NONE);
+                    rssiFails = 0; logf("radio back");
+                }
+            }
+        }
+    }
     if (now - lastStatus >= 1000) { lastStatus = now; sendStatus(); }
     if (now - lastOled >= 250)  { lastOled = now; drawOled();
         pixel.setPixelColor(0, sql ? pixel.Color(0, 60, 0) : pixel.Color(0, 0, 40)); pixel.show(); }
