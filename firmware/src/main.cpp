@@ -1,38 +1,53 @@
 /**
- * twr base-station firmware — Stage 1: receive-only USB audio bridge.
+ * twr base-station firmware — USB audio bridge for the LilyGO T-TWR Plus.
  *
- * Streams SA868 receive audio (GPIO1, ADC1_CH0, 16 kHz / 16-bit) and squelch
- * state to the host over USB CDC using the framed protocol in protocol.h.
- * Frequency / squelch are host-configurable. With TWR_TX_DISABLED (the only
- * env defined so far) there is no code path that drives PTT.
+ *  RX : SA868 audio out (GPIO1, ADC1_CH0) -> 16 kHz/16-bit -> USB CDC frames, plus
+ *       squelch state, RSSI, battery.
+ *  OUT: host PCM (T_AUDIO_TX) -> I2S PDM -> board speaker (GPIO45)      [all builds]
+ *                              -> I2S PDM -> SA868 mic in (GPIO18)      [twr-tx builds, keyed only]
+ *  TX : twr-tx builds only. Boots disarmed; host must T_TX_ARM each session (10 min TTL),
+ *       key with T_PTT; forced unkey after TX_MAX_KEY_MS or if the host goes away.
+ *       TWR_TX_DISABLED builds contain no code path that drives PTT.
  */
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Adafruit_NeoPixel.h>
 #include <driver/adc.h>
+#include <driver/i2s.h>
 #include "LilyGo_TWR.h"
 #include "protocol.h"
 
-#ifndef TWR_TX_DISABLED
-#error "Only the receive-only build exists so far. Build env twr-rx."
+#ifndef TWR_BOARD_ID
+#error "Build with -DTWR_BOARD_ID=65 (A) or 66 (B)"
+#endif
+#ifdef TWR_TX_DISABLED
+#define TX_BUILD 0
+#else
+#define TX_BUILD 1
 #endif
 
 // ---- defaults ------------------------------------------------------------
-// NOAA weather radio, Austin-area WXK27 is 162.400; 162.550 is the most common
-// nationally. Host can retune with T_SET_FREQ.
-static const uint32_t DEFAULT_RX_HZ = 162550000UL;
+static const uint32_t DEFAULT_RX_HZ = 162550000UL;   // NOAA; host retunes with T_SET_FREQ
 static const uint8_t  DEFAULT_SQ    = 1;
+static const int      PLAY_QUEUE_FRAMES = 150;        // 3 s of host audio buffered on-board
 
 // ---- globals -------------------------------------------------------------
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
-
 static Adafruit_NeoPixel pixel(1, PIXELS_PIN, NEO_GRB + NEO_KHZ800);
-static QueueHandle_t audioQ;            // int16_t[AUDIO_FRAME_SAMPLES] frames
+
+static QueueHandle_t audioQ;            // ADC frames  int16_t[AUDIO_FRAME_SAMPLES]
+static QueueHandle_t playQ;             // host frames int16_t[AUDIO_FRAME_SAMPLES]
 static volatile uint16_t g_adcDc = 2048;
 static volatile uint16_t g_dropped = 0;
 static int16_t  g_rssi = 0;
 static bool     g_radioOk = false;
 static bool     g_oledOk = false;
+static uint8_t  g_sink = 0;             // 0 speaker, 1 radio mic
+static uint8_t  g_spkGain = 100, g_micGain = 25;
+static bool     g_armed = false;
+static uint32_t g_armExpiry = 0;
+static bool     g_tx = false;
+static uint32_t g_txStart = 0;
 
 // ---- framing -------------------------------------------------------------
 static void sendFrame(uint8_t type, const void *payload, uint16_t len)
@@ -70,8 +85,8 @@ static void sendStatus()
     s.sql        = TWRClass::isReceiving ? 1 : 0;
     s.rssi       = g_rssi;
     s.batt_mv    = twr.getBattVoltage();
-    s.tx         = 0;
-    s.tx_enabled = 0;
+    s.tx         = g_tx ? 1 : 0;
+    s.tx_enabled = g_armed ? 1 : 0;
     s.rx_hz      = radio.getStetting().recvFreq;
     s.tx_hz      = radio.getStetting().transFreq;
     s.sq         = radio.getStetting().SQ;
@@ -80,13 +95,14 @@ static void sendStatus()
     s.uptime_ms  = millis();
     s.adc_dc     = g_adcDc;
     s.dropped    = g_dropped;
+    s.board_id   = TWR_BOARD_ID;
+    s.sink       = g_sink;
+    s.play_queued= playQ ? uxQueueMessagesWaiting(playQ) : 0;
+    s.tx_build   = TX_BUILD;
     sendFrame(T_STATUS, &s, sizeof(s));
 }
 
-// ---- ADC continuous capture ---------------------------------------------
-// GPIO1 == ADC1_CH0 on ESP32-S3. DMA at AUDIO_RATE_HZ, 12-bit, 11 dB atten
-// (0..~3.1 V). DC offset tracked with a slow IIR and removed; result scaled
-// to int16.
+// ---- ADC continuous capture (radio -> host) --------------------------------
 static bool adcStart()
 {
     adc_digi_init_config_t init = {};
@@ -100,7 +116,7 @@ static bool adcStart()
     pat.atten     = ADC_ATTEN_DB_11;
     pat.channel   = ADC1_CHANNEL_0;
     pat.unit      = 0;
-    pat.bit_width = SOC_ADC_DIGI_MAX_BITWIDTH;   // 12 on S3
+    pat.bit_width = SOC_ADC_DIGI_MAX_BITWIDTH;
 
     adc_digi_configuration_t cfg = {};
     cfg.conv_limit_en  = 0;
@@ -119,7 +135,7 @@ static void adcTask(void *)
     static uint8_t raw[256 * SOC_ADC_DIGI_RESULT_BYTES];
     static int16_t frame[AUDIO_FRAME_SAMPLES];
     size_t fill = 0;
-    int32_t dc = 2048 << 8;                       // Q8 running mean
+    int32_t dc = 2048 << 8;
     for (;;) {
         uint32_t got = 0;
         esp_err_t err = adc_digi_read_bytes(raw, sizeof(raw), &got, 100);
@@ -127,9 +143,9 @@ static void adcTask(void *)
         for (uint32_t i = 0; i + SOC_ADC_DIGI_RESULT_BYTES <= got; i += SOC_ADC_DIGI_RESULT_BYTES) {
             adc_digi_output_data_t *d = (adc_digi_output_data_t *)&raw[i];
             if (d->type2.channel != ADC1_CHANNEL_0) continue;
-            int32_t v = d->type2.data;            // 0..4095
-            dc += ((v << 8) - dc) >> 10;          // ~1 s time constant at 16 kHz
-            int32_t s = (v - (dc >> 8)) << 4;     // center, scale to ~int16
+            int32_t v = d->type2.data;
+            dc += ((v << 8) - dc) >> 10;
+            int32_t s = (v - (dc >> 8)) << 4;
             frame[fill++] = (int16_t)constrain(s, -32768, 32767);
             if (fill == AUDIO_FRAME_SAMPLES) {
                 fill = 0;
@@ -140,21 +156,96 @@ static void adcTask(void *)
     }
 }
 
+// ---- I2S PDM output (host -> speaker / radio mic) ---------------------------
+static void setSink(uint8_t sink)
+{
+    uint8_t oldPin = g_sink ? ESP2SA868_MIC : ESP32_PWM_TONE;
+    uint8_t newPin = sink   ? ESP2SA868_MIC : ESP32_PWM_TONE;
+    if (oldPin != newPin) pinMode(oldPin, INPUT);           // detach previous output
+    i2s_pin_config_t pins = {};
+    pins.mck_io_num = I2S_PIN_NO_CHANGE; pins.bck_io_num = I2S_PIN_NO_CHANGE;
+    pins.ws_io_num  = I2S_PIN_NO_CHANGE; pins.data_in_num = I2S_PIN_NO_CHANGE;
+    pins.data_out_num = newPin;
+    i2s_set_pin(I2S_NUM_0, &pins);
+    g_sink = sink;
+}
+
+static bool i2sStart()
+{
+    i2s_config_t cfg = {};
+    cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_PDM);
+    cfg.sample_rate = AUDIO_RATE_HZ;
+    cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+    cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+    cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+    cfg.dma_buf_count = 6;
+    cfg.dma_buf_len = AUDIO_FRAME_SAMPLES;
+    cfg.use_apll = false;
+    cfg.tx_desc_auto_clear = true;                          // silence on underrun
+    if (i2s_driver_install(I2S_NUM_0, &cfg, 0, NULL) != ESP_OK) return false;
+    setSink(0);
+    return true;
+}
+
+static void playTask(void *)
+{
+    static int16_t frame[AUDIO_FRAME_SAMPLES];
+    static int16_t stereo[AUDIO_FRAME_SAMPLES * 2];
+    for (;;) {
+        if (xQueueReceive(playQ, frame, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        int32_t gain = g_sink ? g_micGain : g_spkGain;
+        for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+            int32_t v = (frame[i] * gain) / 100;
+            v = constrain(v, -32768, 32767);
+            stereo[2 * i] = stereo[2 * i + 1] = (int16_t)v;
+        }
+        size_t written = 0;
+        i2s_write(I2S_NUM_0, stereo, sizeof(stereo), &written, portMAX_DELAY);
+    }
+}
+
+// ---- transmit control (twr-tx builds) ---------------------------------------
+#if TX_BUILD
+static void unkey(const char *why)
+{
+    if (!g_tx) return;
+    radio.receive();                                          // PTT high
+    g_tx = false;
+    setSink(0);
+    twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_RADIO);
+    logf("PTT off (%s, %lu ms)", why, millis() - g_txStart);
+    sendStatus();
+}
+
+static void key()
+{
+    if (g_tx) return;
+    if (!g_armed) { logf("PTT refused: not armed"); return; }
+    if (!g_radioOk) { logf("PTT refused: radio down"); return; }
+    if (twr.getBattVoltage() < 3400) { logf("PTT refused: batt %umV", twr.getBattVoltage()); return; }
+    twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_ESP);  // GPIO17 high: ESP -> radio mic
+    setSink(1);
+    radio.transmit();                                         // PTT low
+    g_tx = true; g_txStart = millis();
+    logf("PTT on  tx=%lu Hz low-power", radio.getStetting().transFreq);
+    sendStatus();
+}
+#endif
+
 // ---- host command parser -------------------------------------------------
 static void handleCommand(uint8_t type, const uint8_t *p, uint16_t len)
 {
     switch (type) {
     case T_PING:
-        sendStatus();
-        logPmu();
+        sendStatus(); logPmu();
         break;
     case T_SET_FREQ: {
         if (len < 11) { logf("SET_FREQ: short payload"); return; }
         uint32_t rx, tx; memcpy(&rx, p, 4); memcpy(&tx, p + 4, 4);
         uint8_t sq = p[8], crx = p[9], ctx = p[10];
         if (!radio.checkFreq(rx) || !radio.checkFreq(tx)) { logf("SET_FREQ: out of band"); return; }
-        // setGroup only programs the SA868 registers; nothing here keys PTT.
-        bool ok = radio.setGroup(false, tx, rx, (teCXCSS)ctx, sq, (teCXCSS)crx);
+        bool ok = radio.setGroup(false, tx, rx, (teCXCSS)ctx, sq, (teCXCSS)crx);   // low power, registers only
         logf("SET_FREQ rx=%lu tx=%lu sq=%u -> %s", rx, tx, sq, ok ? "ok" : "FAIL");
         sendStatus();
         break;
@@ -163,12 +254,38 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint16_t len)
         if (len < 2) return;
         twr.routingSpeakerChannel(p[0] ? TWRClass::TWR_ESP_TO_SPK : TWRClass::TWR_RADIO_TO_SPK);
         radio.setVolume(constrain(p[1], 1, 8));
-        logf("SPK route=%u vol=%u", p[0], p[1]);
+        logf("SPK route=%s vol=%u", p[0] ? "esp" : "radio", p[1]);
         break;
     }
-    case T_AUDIO_TX: case T_PTT: case T_TX_ARM:
+    case T_GAIN:
+        if (len < 2) return;
+        g_spkGain = min<uint8_t>(p[0], 200); g_micGain = min<uint8_t>(p[1], 200);
+        logf("gain spk=%u%% mic=%u%%", g_spkGain, g_micGain);
+        break;
+    case T_AUDIO_TX: {
+        if (len != AUDIO_FRAME_SAMPLES * 2) { logf("AUDIO_TX: want %u bytes, got %u", AUDIO_FRAME_SAMPLES * 2, len); return; }
+        if (xQueueSend(playQ, p, 0) != pdTRUE) g_dropped++;
+        break;
+    }
+    case T_FLUSH:
+        xQueueReset(playQ);
+        break;
+#if TX_BUILD
+    case T_TX_ARM: {
+        uint32_t magic = 0; if (len >= 4) memcpy(&magic, p, 4);
+        if (magic == TX_ARM_MAGIC) { g_armed = true; g_armExpiry = millis() + TX_ARM_TTL_MS; logf("TX ARMED for %lu s", TX_ARM_TTL_MS / 1000); }
+        else { unkey("disarm"); g_armed = false; logf("TX disarmed"); }
+        sendStatus();
+        break;
+    }
+    case T_PTT:
+        if (len >= 1 && p[0]) key(); else unkey("host");
+        break;
+#else
+    case T_TX_ARM: case T_PTT:
         logf("TX is compiled out of this build (TWR_TX_DISABLED)");
         break;
+#endif
     default:
         logf("unknown cmd 0x%02x", type);
     }
@@ -176,7 +293,6 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint16_t len)
 
 static void pollHost()
 {
-    // sync0 sync1 type len_lo len_hi payload crc
     static uint8_t buf[TWR_MAX_PAYLOAD + 6];
     static size_t n = 0;
     while (Serial.available()) {
@@ -198,76 +314,82 @@ static void pollHost()
     }
 }
 
-// ---- OLED ---------------------------------------------------------------
+// ---- OLED / LED -------------------------------------------------------------
 static void drawOled()
 {
     if (!g_oledOk) return;
     char line[32];
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_6x12_tr);
-    u8g2.drawStr(0, 10, "RX ONLY");
+    u8g2.drawStr(0, 10, TX_BUILD ? (g_tx ? "** TX **" : g_armed ? "TX ARMED" : "TX safe") : "RX ONLY");
     u8g2.drawStr(56, 10, Serial ? "USB" : "---");
     u8g2.setFont(u8g2_font_inb38_mr);
-    u8g2.drawStr(92, 44, "A");
+    char id[2] = { TWR_BOARD_ID, 0 };
+    u8g2.drawStr(92, 44, id);
     u8g2.setFont(u8g2_font_10x20_tr);
     uint32_t f = radio.getStetting().recvFreq;
     snprintf(line, sizeof(line), "%3lu.%03lu", f / 1000000UL, (f % 1000000UL) / 1000);
     u8g2.drawStr(0, 32, line);
     u8g2.setFont(u8g2_font_6x12_tr);
-    snprintf(line, sizeof(line), "SQL %s", TWRClass::isReceiving ? "OPEN" : "----");
+    snprintf(line, sizeof(line), "SQL %s %s", TWRClass::isReceiving ? "OPEN" : "----", g_sink ? "MIC" : "SPK");
     u8g2.drawStr(0, 48, line);
     snprintf(line, sizeof(line), "RSSI %d %umV", g_rssi, twr.getBattVoltage());
     u8g2.drawStr(0, 62, line);
     u8g2.sendBuffer();
 }
 
+static void updateLed(bool sql)
+{
+    uint32_t c;
+    if (g_tx)       c = pixel.Color(80, 0, 0);                              // red: transmitting
+    else if (sql)   c = pixel.Color(0, 60, 0);                              // green: receiving
+    else if (TWR_BOARD_ID == 'A') c = pixel.Color(0, 0, 40);                // blue: A idle
+    else            c = pixel.Color(40, 0, 40);                             // magenta: B idle
+    pixel.setPixelColor(0, c); pixel.show();
+}
+
 // ---- setup / loop ---------------------------------------------------------
 void setup()
 {
+    Serial.setRxBufferSize(32768);           // host streams 32 kB/s of audio; loop can stall ~50 ms
     Serial.begin(115200);
-    Serial.setTxTimeoutMs(5);        // never block the loop on a stalled host
+    Serial.setTxTimeoutMs(5);
     delay(300);
 
-    pixel.begin(); pixel.setPixelColor(0, pixel.Color(0, 0, 40)); pixel.show();   // blue = board A
-    bool ok = twr.begin(LILYGO_TWR_REV2_1);   // auto-detect samples IO2 and misreads; both boards are Rev2.1
+    pixel.begin(); updateLed(false);
+    bool ok = twr.begin(LILYGO_TWR_REV2_1);     // auto-detect samples IO2 and misreads; both boards are Rev2.1
     if (!ok) { while (1) { logf("PMU/board init failed"); delay(1000); } }
 
     uint8_t addr = twr.getOLEDAddress();
-    if (addr != 0xFF) {
-        u8g2.setI2CAddress(addr << 1);
-        g_oledOk = u8g2.begin();
-    }
+    if (addr != 0xFF) { u8g2.setI2CAddress(addr << 1); g_oledOk = u8g2.begin(); }
 
-    if (twr.getVersion() == TWRClass::TWR_REV2V1) {
-        radio.setPins(SA868_PTT_PIN, SA868_PD_PIN);
-        g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());
-    } else {
-        radio.setPins(SA868_PTT_PIN, SA868_PD_PIN, SA868_RF_PIN);
-        g_radioOk = radio.begin(RadioSerial, SA8X8_VHF);
-    }
+    radio.setPins(SA868_PTT_PIN, SA868_PD_PIN);
+    g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());   // leaves PTT high (idle)
     if (!g_radioOk) {
-        // Keep running so the host can still read PMU state; retry the radio every 5 s.
         while (!g_radioOk) {
-            logf("SA868 not responding (VBAT ok? antenna?)"); logPmu(); drawOled();
+            logf("SA868 not responding (VBAT ok?)"); logPmu(); drawOled();
             delay(5000);
             g_radioOk = radio.begin(RadioSerial, twr.getBandDefinition());
         }
         logf("SA868 came up after retry");
     }
 
-    radio.lowPower();                                    // config only; no TX path exists
+    radio.lowPower();
     radio.setBandWidth(12500);
     radio.setGroup(false, DEFAULT_RX_HZ, DEFAULT_RX_HZ, E_CXCSS_NONE, DEFAULT_SQ, E_CXCSS_NONE);
-    radio.setFilter(false, false, false);                // flat audio for STT
+    radio.setFilter(false, false, false);
     radio.setVolume(4);
     twr.routingSpeakerChannel(TWRClass::TWR_RADIO_TO_SPK);
-    twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_RADIO); // onboard mic stays off the ESP
+    twr.routingMicrophoneChannel(TWRClass::TWR_MIC_TO_RADIO);
 
     audioQ = xQueueCreate(8, AUDIO_FRAME_SAMPLES * sizeof(int16_t));
-    if (!adcStart()) { logf("ADC continuous init failed"); }
-    xTaskCreatePinnedToCore(adcTask, "adc", 4096, nullptr, configMAX_PRIORITIES - 2, nullptr, 1);
+    playQ  = xQueueCreate(PLAY_QUEUE_FRAMES, AUDIO_FRAME_SAMPLES * sizeof(int16_t));
+    if (!adcStart()) logf("ADC continuous init failed");
+    if (!i2sStart()) logf("I2S PDM init failed");
+    xTaskCreatePinnedToCore(adcTask,  "adc",  4096, nullptr, configMAX_PRIORITIES - 2, nullptr, 1);
+    xTaskCreatePinnedToCore(playTask, "play", 4096, nullptr, configMAX_PRIORITIES - 3, nullptr, 1);
 
-    logf("twr-rx up: rev%s band=%s rx=%lu", twr.getVersion() == TWRClass::TWR_REV2V1 ? "2.1" : "2.0",
+    logf("twr-%s-%c up: band=%s rx=%lu", TX_BUILD ? "tx" : "rx", TWR_BOARD_ID,
          twr.getBandDefinition() == SA8X8_VHF ? "VHF" : "UHF", radio.getStetting().recvFreq);
     sendStatus();
 }
@@ -278,11 +400,13 @@ void loop()
     static uint16_t seq = 0;
     static uint32_t lastStatus = 0, lastOled = 0, lastRssi = 0;
     static bool lastSql = false;
+    static uint8_t rssiFails = 0;
 
     twr.tick();
     pollHost();
 
     while (xQueueReceive(audioQ, frame, 0) == pdTRUE) {
+        if (g_tx) continue;                                   // nothing useful on the ADC while keyed
         uint8_t pkt[2 + AUDIO_FRAME_SAMPLES * 2];
         memcpy(pkt, &seq, 2); seq++;
         memcpy(pkt + 2, frame, sizeof(frame));
@@ -292,10 +416,15 @@ void loop()
     uint32_t now = millis();
     bool sql = TWRClass::isReceiving;
     if (sql != lastSql) { lastSql = sql; sendStatus(); }
-    // RSSI poll; if the radio stops answering (VBAT sag), back off and re-init once power is back.
-    static uint8_t rssiFails = 0;
+
+#if TX_BUILD
+    if (g_tx && (now - g_txStart > TX_MAX_KEY_MS)) unkey("max key time");
+    if (g_tx && !Serial) unkey("host gone");
+    if (g_armed && (int32_t)(now - g_armExpiry) > 0) { unkey("arm expired"); g_armed = false; logf("TX arm expired"); sendStatus(); }
+#endif
+
     uint32_t rssiPeriod = rssiFails >= 3 ? 5000 : 500;
-    if (now - lastRssi >= rssiPeriod) {
+    if (!g_tx && now - lastRssi >= rssiPeriod) {
         lastRssi = now;
         int r = radio.getRSSI();
         if (r > 0) { g_rssi = r; rssiFails = 0; }
@@ -312,7 +441,6 @@ void loop()
         }
     }
     if (now - lastStatus >= 1000) { lastStatus = now; sendStatus(); }
-    if (now - lastOled >= 250)  { lastOled = now; drawOled();
-        pixel.setPixelColor(0, sql ? pixel.Color(0, 60, 0) : pixel.Color(0, 0, 40)); pixel.show(); }
+    if (now - lastOled >= 250)  { lastOled = now; drawOled(); updateLed(sql); }
     delay(1);
 }

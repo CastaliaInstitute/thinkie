@@ -17,12 +17,18 @@ enum : uint8_t {
     T_LOG      = 0x03,  // utf-8 text
     // host -> device
     T_SET_FREQ = 0x10,  // u32 rx_hz, u32 tx_hz, u8 sq(0-8), u8 ctcss_rx, u8 ctcss_tx
-    T_AUDIO_TX = 0x11,  // int16le PCM  (Stage 3 only)
-    T_PTT      = 0x12,  // u8 on        (Stage 3 only)
-    T_TX_ARM   = 0x13,  // u32 magic    (Stage 3 only)
-    T_SPK      = 0x14,  // u8 route (0=radio->spk, 1=esp->spk), u8 volume 1..8
-    T_PING     = 0x15,  // -> T_STATUS
+    T_AUDIO_TX = 0x11,  // int16le PCM @ AUDIO_RATE_HZ -> current sink (speaker, or radio mic while keyed)
+    T_PTT      = 0x12,  // u8 on        (twr-tx builds only, and only while armed)
+    T_TX_ARM   = 0x13,  // u32 magic (TX_ARM_MAGIC arms, 0 disarms)   (twr-tx builds only)
+    T_SPK      = 0x14,  // u8 route (0=radio->spk, 1=esp->spk), u8 radio volume 1..8
+    T_PING     = 0x15,  // -> T_STATUS (+ T_LOG with PMU detail)
+    T_GAIN     = 0x16,  // u8 spk_gain_pct, u8 mic_gain_pct (0..200) for AUDIO_TX playback
+    T_FLUSH    = 0x17,  // drop queued AUDIO_TX
 };
+
+#define TX_ARM_MAGIC   0x54582D4FUL   // "TX-O"
+#define TX_ARM_TTL_MS  (10UL * 60UL * 1000UL)   // arm expires after 10 min
+#define TX_MAX_KEY_MS  (60UL * 1000UL)          // forced unkey after 60 s
 
 #define AUDIO_RATE_HZ      16000
 #define AUDIO_FRAME_SAMPLES 320   // 20 ms
@@ -31,8 +37,8 @@ struct __attribute__((packed)) twr_status {
     uint8_t  sql;        // 1 = squelch open / carrier present (SA868_SQL low)
     int16_t  rssi;       // from AT+RSSI?
     uint16_t batt_mv;
-    uint8_t  tx;         // 1 = PTT asserted (always 0 in TWR_TX_DISABLED builds)
-    uint8_t  tx_enabled; // build has TX code and it is armed
+    uint8_t  tx;         // 1 = PTT asserted
+    uint8_t  tx_enabled; // 1 = armed (twr-tx builds only)
     uint32_t rx_hz;
     uint32_t tx_hz;
     uint8_t  sq;
@@ -41,6 +47,10 @@ struct __attribute__((packed)) twr_status {
     uint32_t uptime_ms;
     uint16_t adc_dc;     // current DC offset estimate (raw 12-bit)
     uint16_t dropped;    // audio frames dropped since boot (host too slow)
+    uint8_t  board_id;   // 'A' or 'B'
+    uint8_t  sink;       // 0 = speaker, 1 = radio mic
+    uint16_t play_queued;// AUDIO_TX frames waiting to play
+    uint8_t  tx_build;   // 1 if firmware has TX code compiled in
 };
 
 static inline uint8_t twr_crc8(const uint8_t *p, size_t n, uint8_t crc = 0) {
