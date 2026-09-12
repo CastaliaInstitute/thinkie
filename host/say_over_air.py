@@ -20,12 +20,14 @@ from play import load_wav_16k, tone
 import ai_gemini
 
 def transmit(link: ThinkieLink, pcm: bytes, mic_gain: int = 25, lead_s: float = 0.3) -> float:
-    """Key, stream pcm to the radio mic, unkey. Returns keyed seconds."""
-    link.flush(); link.gain(100, mic_gain)
-    link.ptt(True); t0 = time.time(); time.sleep(lead_s)          # SA868 TX settle
-    secs = link.play_pcm(pcm)
-    time.sleep(0.55 + 0.15)                                       # drain on-board queue + tail
-    link.ptt(False)
+    """Upload the clip to the board, then let the board key/play/unkey on its own.
+    A USB hiccup mid-transmission no longer truncates the audio. Returns seconds elapsed."""
+    link.gain(100, mic_gain)
+    secs = len(pcm) / (2 * AUDIO_RATE_HZ)
+    link.clip_load(pcm)
+    t0 = time.time()
+    ok = link.clip_run(transmit=True, expect_s=secs + lead_s + 0.5)
+    if not ok and link.log: link.log("(link) clip transmit: no completion seen")
     return time.time() - t0
 
 def main():

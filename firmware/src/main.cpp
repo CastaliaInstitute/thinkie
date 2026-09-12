@@ -48,6 +48,9 @@ static bool     g_armed = false;
 static uint32_t g_armExpiry = 0;
 static bool     g_tx = false;
 static uint32_t g_txStart = 0;
+static int16_t *g_clip = nullptr;          // PSRAM clip buffer for autonomous playback/transmit
+static size_t   g_clipLen = 0;             // samples
+static volatile int g_clipJob = 0;         // 0 idle, 1 play on speaker, 2 transmit
 
 // ---- framing -------------------------------------------------------------
 static void sendFrame(uint8_t type, const void *payload, uint16_t len)
@@ -99,6 +102,7 @@ static void sendStatus()
     s.sink       = g_sink;
     s.play_queued= playQ ? uxQueueMessagesWaiting(playQ) : 0;
     s.tx_build   = TX_BUILD;
+    s.play_queued= g_clipJob ? 0xFFFF : s.play_queued;   // 0xFFFF = clip job running
     sendFrame(T_STATUS, &s, sizeof(s));
 }
 
@@ -188,20 +192,55 @@ static bool i2sStart()
     return true;
 }
 
+static void writeFrame(const int16_t *frame, int n)
+{
+    static int16_t stereo[AUDIO_FRAME_SAMPLES * 2];
+    int32_t gain = g_sink ? g_micGain : g_spkGain;
+    for (int i = 0; i < n; i++) {
+        int32_t v = (frame[i] * gain) / 100;
+        v = constrain(v, -32768, 32767);
+        stereo[2 * i] = stereo[2 * i + 1] = (int16_t)v;
+    }
+    size_t written = 0;
+    i2s_write(I2S_NUM_0, stereo, n * 4, &written, portMAX_DELAY);
+}
+
+static void playClipBlocking()
+{
+    for (size_t off = 0; off < g_clipLen; off += AUDIO_FRAME_SAMPLES)
+        writeFrame(g_clip + off, min((size_t)AUDIO_FRAME_SAMPLES, g_clipLen - off));
+    static const int16_t zeros[AUDIO_FRAME_SAMPLES] = {0};
+    for (int i = 0; i < 6; i++) writeFrame(zeros, AUDIO_FRAME_SAMPLES);   // flush DMA with silence
+}
+
+#if TX_BUILD
+static void key(bool espAudio);
+static void unkey(const char *why);
+#endif
+
 static void playTask(void *)
 {
     static int16_t frame[AUDIO_FRAME_SAMPLES];
-    static int16_t stereo[AUDIO_FRAME_SAMPLES * 2];
     for (;;) {
-        if (xQueueReceive(playQ, frame, pdMS_TO_TICKS(100)) != pdTRUE) continue;
-        int32_t gain = g_sink ? g_micGain : g_spkGain;
-        for (int i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-            int32_t v = (frame[i] * gain) / 100;
-            v = constrain(v, -32768, 32767);
-            stereo[2 * i] = stereo[2 * i + 1] = (int16_t)v;
+        if (g_clipJob) {
+            int job = g_clipJob;
+            if (job == 1) {
+                twr.routingSpeakerChannel(TWRClass::TWR_ESP_TO_SPK);
+                playClipBlocking();
+                twr.routingSpeakerChannel(TWRClass::TWR_RADIO_TO_SPK);
+            }
+#if TX_BUILD
+            else if (job == 2) {
+                key(true);
+                if (g_tx) { delay(250); playClipBlocking(); delay(120); unkey("clip done"); }
+            }
+#endif
+            g_clipJob = 0;
+            logf("clip job %d finished (%u samples)", job, (unsigned)g_clipLen);
+            continue;
         }
-        size_t written = 0;
-        i2s_write(I2S_NUM_0, stereo, sizeof(stereo), &written, portMAX_DELAY);
+        if (xQueueReceive(playQ, frame, pdMS_TO_TICKS(100)) != pdTRUE) continue;
+        writeFrame(frame, AUDIO_FRAME_SAMPLES);
     }
 }
 
@@ -286,6 +325,31 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint16_t len)
     case T_FLUSH:
         xQueueReset(playQ);
         break;
+    case T_CLIP_CLEAR:
+        if (!g_clipJob) g_clipLen = 0;
+        break;
+    case T_CLIP_LOAD: {
+        if (g_clipJob) return;
+        size_t n = len / 2, cap = (size_t)CLIP_MAX_S * AUDIO_RATE_HZ;
+        if (!g_clip) g_clip = (int16_t *)ps_malloc(cap * sizeof(int16_t));
+        if (!g_clip) { logf("clip: no PSRAM"); return; }
+        if (g_clipLen + n > cap) { logf("clip: full at %us", CLIP_MAX_S); return; }
+        memcpy(g_clip + g_clipLen, p, n * 2); g_clipLen += n;
+        break;
+    }
+    case T_CLIP_PLAY:
+        if (g_clipLen && !g_clipJob) { logf("clip: playing %.1fs on speaker", g_clipLen / (float)AUDIO_RATE_HZ); g_clipJob = 1; }
+        break;
+#if TX_BUILD
+    case T_CLIP_TX:
+        if (!g_armed) { logf("clip TX refused: not armed"); return; }
+        if (g_clipLen && !g_clipJob) { logf("clip: transmitting %.1fs", g_clipLen / (float)AUDIO_RATE_HZ); g_clipJob = 2; }
+        break;
+#else
+    case T_CLIP_TX:
+        logf("TX is compiled out of this build (TWR_TX_DISABLED)");
+        break;
+#endif
 #if TX_BUILD
     case T_TX_ARM: {
         uint32_t magic = 0; if (len >= 4) memcpy(&magic, p, 4);
@@ -375,6 +439,10 @@ void setup()
     pixel.begin(); updateLed(false);
     bool ok = twr.begin(LILYGO_TWR_REV2_1);     // auto-detect samples IO2 and misreads; both boards are Rev2.1
     if (!ok) { while (1) { logf("PMU/board init failed"); delay(1000); } }
+    // Keep USB draw inside a hub port's budget: the PA sags VBAT on key-up and the charger
+    // ramping to the library's 2 A VBUS limit trips the port (seen as CDC disconnects on PTT).
+    twr.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_500MA);
+    twr.setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_200MA);
 
     uint8_t addr = twr.getOLEDAddress();
     if (addr != 0xFF) { u8g2.setI2CAddress(addr << 1); g_oledOk = u8g2.begin(); }
@@ -439,7 +507,7 @@ void loop()
 #if TX_BUILD
     pollPttButton();
     if (g_tx && (now - g_txStart > TX_MAX_KEY_MS)) unkey("max key time");
-    if (g_tx && !Serial) unkey("host gone");
+    if (g_tx && !Serial && g_clipJob != 2) unkey("host gone");   // autonomous clip TX finishes on its own (bounded by TX_MAX_KEY_MS)
     if (g_armed && (int32_t)(now - g_armExpiry) > 0) { unkey("arm expired"); g_armed = false; logf("TX arm expired"); sendStatus(); }
 #endif
 

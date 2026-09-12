@@ -123,10 +123,8 @@ def main():
             except Exception: break
 
         if a.tx:
-            tx.ptt(True); time.sleep(0.25)               # SA868 needs ~150 ms to settle on key-up
-            secs = tx.play_pcm(pcm)
-            time.sleep(0.6 + 0.1)                        # on-board queue tail + radio tail
-            tx.ptt(False)
+            from say_over_air import transmit
+            secs = transmit(tx, pcm, mic_gain=30)
         else:
             tx.speaker(True, a.vol)
             secs = tx.play_pcm(pcm)

@@ -10,6 +10,8 @@ import serial
 SYNC = b"\xAA\x55"
 T_AUDIO_RX, T_STATUS, T_LOG = 0x01, 0x02, 0x03
 T_SET_FREQ, T_AUDIO_TX, T_PTT, T_TX_ARM, T_SPK, T_PING, T_GAIN, T_FLUSH = 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17
+T_CLIP_LOAD, T_CLIP_TX, T_CLIP_PLAY, T_CLIP_CLEAR = 0x18, 0x19, 0x1A, 0x1B
+CLIP_RUNNING = 0xFFFF
 TX_ARM_MAGIC = 0x54582D4F
 AUDIO_RATE_HZ = 16000
 AUDIO_FRAME_SAMPLES = 320
@@ -57,6 +59,7 @@ class Status:
 class ThinkieLink:
     """Background reader; frames land in .q as (type, payload). .status holds the latest Status."""
     def __init__(self, port: str, log=None):
+        self.alias = None if port.startswith("/dev/") else port.upper()
         self.port = resolve_port(port)
         self.ser = serial.Serial(self.port, 115200, timeout=0.05)
         self.ser.dtr = True                         # firmware streams only when DTR set
@@ -87,6 +90,7 @@ class ThinkieLink:
                 if len(buf) < 6 + n: break
                 payload = bytes(buf[5:5 + n])
                 if crc8(buf[2:5 + n]) == buf[5 + n]:
+                    self._last_rx = time.time()
                     if t == T_STATUS: self.status = Status.unpack(payload)
                     elif t == T_LOG and self.log: self.log(payload.decode("utf-8", "replace"))
                     try: self.q.put_nowait((t, payload))
@@ -108,10 +112,13 @@ class ThinkieLink:
 
     def reconnect(self, why: str = ""):
         self.dropped = getattr(self, "dropped", 0) + 1
-        for i in range(40):                      # up to ~8 s for re-enumeration
+        for i in range(75):                      # up to ~15 s for re-enumeration (name may change)
             try:
                 try: self.ser.close()
                 except Exception: pass
+                if self.alias:
+                    try: self.port = resolve_port(self.alias)
+                    except Exception: pass
                 self.ser = serial.Serial(self.port, 115200, timeout=0.05); self.ser.dtr = True
                 if self.log: self.log(f"(link) reopened {self.port} after: {why[:60]}")
                 return
@@ -144,6 +151,29 @@ class ThinkieLink:
                 d = target - time.time()
                 if d > 0: time.sleep(d)
         return n * 0.02
+
+    # ---- autonomous clip playback / transmit (survives a USB drop mid-clip) ----
+    def clip_load(self, pcm16: bytes):
+        self.send(T_CLIP_CLEAR)
+        for i in range(0, len(pcm16), FRAME_BYTES):
+            self.send(T_CLIP_LOAD, pcm16[i:i + FRAME_BYTES])
+            if i % (FRAME_BYTES * 25) == 0: time.sleep(0.05)      # stay inside the board's RX buffer
+        time.sleep(0.2)
+
+    def clip_run(self, transmit: bool, expect_s: float) -> bool:
+        """Start the on-board job and wait for it to finish. Tolerates the link dropping."""
+        self.send(T_CLIP_TX if transmit else T_CLIP_PLAY)
+        deadline = time.time() + expect_s + 4.0
+        seen_running = False
+        while time.time() < deadline:
+            time.sleep(0.25)
+            st = self.status
+            if st and st.play_queued == CLIP_RUNNING: seen_running = True
+            elif seen_running and st and st.play_queued != CLIP_RUNNING: return True
+            if time.time() - getattr(self, "_last_rx", time.time()) > 2:      # link quiet: try pinging
+                try: self.ping()
+                except Exception: pass
+        return seen_running
 
     def wait_status(self, timeout: float = 2.0) -> Status | None:
         self.ping(); t0 = time.time(); before = self.status

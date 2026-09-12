@@ -24,7 +24,12 @@ enum : uint8_t {
     T_PING     = 0x15,  // -> T_STATUS (+ T_LOG with PMU detail)
     T_GAIN     = 0x16,  // u8 spk_gain_pct, u8 mic_gain_pct (0..200) for AUDIO_TX playback
     T_FLUSH    = 0x17,  // drop queued AUDIO_TX
+    T_CLIP_LOAD= 0x18,  // int16le PCM chunk appended to the on-board clip buffer (PSRAM, up to CLIP_MAX_S)
+    T_CLIP_TX  = 0x19,  // key, play the whole clip buffer into the radio mic, unkey; autonomous (twr-tx builds)
+    T_CLIP_PLAY= 0x1A,  // play the clip buffer on the speaker (no RF)
+    T_CLIP_CLEAR=0x1B,
 };
+#define CLIP_MAX_S 45
 
 #define TX_ARM_MAGIC   0x54582D4FUL   // "TX-O"
 #define TX_ARM_TTL_MS  (10UL * 60UL * 1000UL)   // arm expires after 10 min
